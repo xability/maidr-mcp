@@ -120,7 +120,11 @@ async function relay() {
     }
     for (const call of calls) {
       const result = await run(call);
-      if (call.tool === "maidr_navigate" && result?.applied === "on-next-focus") moveWaiting = true;
+      // maidr keeps one move, the latest: a move it made at once leaves none waiting, and one it
+      // refused leaves the kept one as it was.
+      if (call.tool === "maidr_navigate" && result?.ok === true) {
+        moveWaiting = result.applied === "on-next-focus";
+      }
       await app
         .callServerTool({ name: "maidr_view_reply", arguments: { viewId, callId: call.callId, result } })
         .catch(() => {});
@@ -172,9 +176,12 @@ document.addEventListener(
     refreshNotice();
     if (!ready || !chart.contains(event.target)) return;
     moveWaiting = false; // maidr makes it on this focus-in,
-    // then runs the waiting commands, one every 500 ms: read the position again after the last.
-    const commands = await commandsWaiting();
-    if (commands) setTimeout(refreshPosition, 500 * commands);
+    // then runs the waiting commands, one every 500 ms. Read the position again once maidr
+    // counts none left (at most 8, so a few seconds), or the reader has left the chart.
+    for (let i = 0; i < 12 && readerInChart() && (await commandsWaiting()) > 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    refreshPosition();
   },
   true,
 );
