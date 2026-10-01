@@ -20,18 +20,20 @@ The model calls `show_chart` with the data, and the chart appears in the convers
 
    If hosts adopt WebMCP for MCP Apps, as [ext-apps#798](https://github.com/modelcontextprotocol/ext-apps/pull/798) proposes, maidr's tools reach the model directly and the relay can go.
 4. On each key the reader presses in the chart, the view sends their position with `ui/update-model-context`.
+5. `update_chart` draws a new chart for a `viewId` and relays it to that view, which swaps it in place: maidr lets go of the old chart and binds the new one. The server keeps the latest chart, so a view that missed the swap, out of view or mounted again by the host, catches up on its next poll.
 
 ## Tools
 
 | Tool | Called by | Does |
 | --- | --- | --- |
 | `show_chart` | model | Draws the chart and shows it. Returns the `viewId` the other tools take. |
+| `update_chart` | model | Draws a new chart and puts it in place of the one in that `viewId`'s view. Adds no view. A reader in the chart stays in it, on the new chart; anyone else keeps their focus. Both are told it changed. |
 | `maidr_list_charts` | model | Returns the chart's layers, point counts, and where the reader is. Silent. |
 | `maidr_get_layer_data` | model | Returns a page of a layer's points, each with the `target` that `maidr_navigate` takes. Silent. |
 | `maidr_navigate` | model | Moves the reader to a point and announces it. |
-| `maidr_view_poll`, `maidr_view_reply`, `maidr_view_svg` | the chart view only | Carry the relay, and the SVG for hosts that drop `_meta`. |
+| `maidr_view_poll`, `maidr_view_reply`, `maidr_view_svg` | the chart view only | Carry the relay, and the SVG for `update_chart` and for hosts that drop `_meta`. |
 
-`show_chart` takes one of these chart types, the ones py-maidr marks [stable](https://py.maidr.ai/stability.html). Each maps onto the maidr layer type shown:
+`show_chart` and `update_chart` take one of these chart types, the ones py-maidr marks [stable](https://py.maidr.ai/stability.html). Each maps onto the maidr layer type shown:
 
 | `type` | Fields | maidr layer | The model can move the reader there |
 | --- | --- | --- | --- |
@@ -115,6 +117,7 @@ It checks:
 - a move made while the reader is in the chat waits, and is announced when they Tab in;
 - the arrow keys announce, and the reader's position reaches the host as model context;
 - a move made while the reader is in the chart is announced at once;
+- `update_chart` changes the chart in its own view, with no view added: a reader outside it keeps their focus, a reader in it stays in it, both are told, and maidr reads only the new chart;
 - a step, violin, pie and candlestick chart and a scatter with a trend line each appear: maidr reads each as the layers in the [table above](#tools), ArrowRight announces its first point, and a move the model asks for is announced, or refused by maidr where the table says so;
 - there are no console errors or CSP violations.
 
@@ -122,14 +125,14 @@ It checks:
 
 - **The model learns the reader's position one turn late.** It sees the position on its next turn, not in the middle of one.
 - **Moves wait until the reader is in the chart.** maidr never moves focus. A move made while the reader is typing to the model is kept, and announced when they Tab back into the chart. `maidr_navigate` says so (`applied: "on-next-focus"`), and the model should tell them.
-- **Each `show_chart` call adds a chart.** Claude mounts a new view for every call, and earlier views stay.
+- **Each `show_chart` call still adds a chart.** Claude mounts a new view for every call to a tool with a UI, and keeps the earlier ones. A chart that changes stays in its view only when the model calls `update_chart`, as the server's instructions ask; a second `show_chart` is a second view.
 - **The relay keeps a request open.** The view's poll holds a request for up to 20 seconds. Whether a given host limits calls made from a view is not yet known.
 - **There is no authentication.** Anyone with the server's URL can draw charts. A chart can only be read or driven with its `viewId`, a random 24-character token.
 - **Ten chart families, and no plotting code.** The model sends data for one of the types [above](#tools), and the server draws it. It deliberately takes no plotting code: anyone with its URL could run code on it. py-maidr's experimental plot types are left out until they have been tried with readers.
 
 ## Network and data
 
-- **The server:** receives the data the model sends to draw a chart. It keeps the chart's SVG in memory until the chart has gone 15 minutes without polling, and logs nothing about the data beyond the HTTP access log.
+- **The server:** receives the data the model sends to draw a chart. It keeps the chart's latest SVG in memory until the chart has gone 15 minutes without polling, and logs nothing about the data beyond the HTTP access log.
 - **The chart view:** loads maidr.js and the MCP Apps SDK from `cdn.jsdelivr.net`. maidr's own AI chat inside the chart works as it does anywhere else, with a key the reader adds.
 
 ## Development
