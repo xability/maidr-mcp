@@ -1,10 +1,12 @@
 """What a host sees of the server: tools, the chart view, and calls relayed through it."""
 
+import re
+
 import anyio
 import pytest
 from mcp import Client
 
-from maidr_mcp.relay import Relay
+from maidr_mcp.relay import POLL_SECONDS, Relay
 from maidr_mcp.server import (
     CDN,
     MAIDR_JS_VERSION,
@@ -50,6 +52,15 @@ async def test_the_view_is_an_mcp_app_loading_only_from_jsdelivr():
 def test_the_maidr_js_version_can_be_pinned(monkeypatch):
     monkeypatch.setenv("MAIDR_MCP_MAIDR_JS_VERSION", "4.10.0")
     assert "maidr@4.10.0/dist/maidr.js" in view_html()
+
+
+def test_the_view_waits_on_a_long_poll_as_long_as_the_server_holds_it():
+    # The view reads a long poll that comes back early and empty as cut by the host. Held for
+    # less than LONG_WAIT, every long poll would look cut and the view would fall back to
+    # short polls on every host.
+    long_wait = re.search(r"const LONG_WAIT = (\d+);", view_html())
+    assert long_wait is not None
+    assert float(long_wait.group(1)) == POLL_SECONDS
 
 
 async def test_show_chart_gives_the_model_a_view_id_and_the_view_its_svg():
