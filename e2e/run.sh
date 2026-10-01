@@ -6,7 +6,8 @@
 #
 # EXT_APPS_REF picks the ext-apps tag the host is built from. CHROMIUM points the
 # driver at a Chromium binary; without it, run `npx playwright-core install chromium`
-# in e2e/ first.
+# in e2e/ first. With MAIDR_MCP_TOKEN set, the server requires that token, and the
+# host and the driver reach it through the URL form, /mcp/<token>.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -15,6 +16,7 @@ CACHE="$HERE/work"  # not a dot directory: express will not send files from one
 EXT_APPS_REF="${EXT_APPS_REF:-v2.0.3}"
 HOST_DIR="$CACHE/basic-host-$EXT_APPS_REF"
 SERVER_PORT="${SERVER_PORT:-3001}"
+MCP_URL="http://localhost:$SERVER_PORT/mcp${MAIDR_MCP_TOKEN:+/$MAIDR_MCP_TOKEN}"
 
 if [ ! -f "$HOST_DIR/dist/index.html" ]; then
   rm -rf "$CACHE/ext-apps" "$HOST_DIR"
@@ -36,11 +38,12 @@ uv sync --quiet --project "$ROOT"
 # Started directly rather than through uv or npx, so the trap stops the processes holding the ports.
 "$ROOT/.venv/bin/maidr-mcp" --port "$SERVER_PORT" &
 SERVER=$!
-(cd "$HOST_DIR" && SERVERS="[\"http://localhost:$SERVER_PORT/mcp\"]" exec node --import tsx serve.ts) &
+(cd "$HOST_DIR" && SERVERS="[\"$MCP_URL\"]" exec node --import tsx serve.ts) &
 HOST=$!
 trap 'kill $SERVER $HOST 2>/dev/null || true' EXIT
 
-# A GET on /mcp would open an event stream, so ask with OPTIONS, and never wait long.
+# A GET on /mcp would open an event stream, so ask with OPTIONS, which needs no token,
+# and never wait long.
 for url in "http://localhost:8080/" "http://localhost:$SERVER_PORT/mcp"; do
   for _ in $(seq 60); do
     curl -s -o /dev/null --max-time 2 -X OPTIONS "$url" && break
@@ -48,4 +51,4 @@ for url in "http://localhost:8080/" "http://localhost:$SERVER_PORT/mcp"; do
   done
 done
 
-SERVER_URL="http://localhost:$SERVER_PORT/mcp" node "$HERE/drive.mjs"
+SERVER_URL="$MCP_URL" node "$HERE/drive.mjs"
