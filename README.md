@@ -31,18 +31,24 @@ The model calls `show_chart` with the data, and the chart appears in the convers
 | `maidr_navigate` | model | Moves the reader to a point and announces it. |
 | `maidr_view_poll`, `maidr_view_reply`, `maidr_view_svg` | the chart view only | Carry the relay, and the SVG for hosts that drop `_meta`. |
 
-`show_chart` takes one of these chart types. Each maps onto the maidr layer type shown:
+`show_chart` takes one of these chart types, the ones py-maidr marks [stable](https://py.maidr.ai/stability.html). Each maps onto the maidr layer type shown:
 
-| `type` | Fields | maidr layer |
-| --- | --- | --- |
-| `bar` | `categories`, `series` (one series, or several side by side, or `stacked`) | `bar`, `dodged_bar`, `stacked_bar` |
-| `line` | `x` (numbers or labels), `series` | `line` |
-| `scatter` | `x`, `y` | `point` |
-| `histogram` | `values`, `bins` | `hist` |
-| `box` | `groups` | `box` |
-| `heatmap` | `x_labels`, `y_labels`, `values`, `z_label` | `heat` |
+| `type` | Fields | maidr layer | The model can move the reader there |
+| --- | --- | --- | --- |
+| `bar` | `categories`, `series` (one series, or several side by side, or `stacked`) | `bar`, `dodged_bar`, `stacked_bar` | yes |
+| `line` | `x` (numbers or labels), `series` | `line` | yes |
+| `step` | `x`, `series`, `where` (`post`, `pre` or `mid`) | `step` | yes |
+| `scatter` | `x`, `y`, and `trend` for a least-squares line | `point`, and `smooth` for the trend line | to the points, not the line |
+| `histogram` | `values`, `bins` | `hist` | yes |
+| `box` | `groups` | `box` | no |
+| `violin` | `groups` | `violin_box`, `violin_kde` | no |
+| `heatmap` | `x_labels`, `y_labels`, `values`, `z_label` | `heat` | yes |
+| `pie` | `categories`, `values` (read clockwise from 12 o'clock) | `pie` | no |
+| `candlestick` | `dates`, `open`, `high`, `low`, `close` | `candlestick` | no |
 
-Every type also takes `title`, `x_label` and `y_label`.
+Every type also takes `title`, `x_label` and `y_label`. A pie has no axes, so there they name what the slices are and what the values measure.
+
+The model reads every layer's points with `maidr_get_layer_data`. Where the last column says no, maidr gives the points no `target`: the reader moves through them with the keys, and `maidr_navigate` answers `layer not navigable`.
 
 ## Use it
 
@@ -109,6 +115,7 @@ It checks:
 - a move made while the reader is in the chat waits, and is announced when they Tab in;
 - the arrow keys announce, and the reader's position reaches the host as model context;
 - a move made while the reader is in the chart is announced at once;
+- a step, violin, pie and candlestick chart and a scatter with a trend line each appear: maidr reads each as the layers in the [table above](#tools), ArrowRight announces its first point, and a move the model asks for is announced, or refused by maidr where the table says so;
 - there are no console errors or CSP violations.
 
 ## Limits
@@ -118,7 +125,7 @@ It checks:
 - **Each `show_chart` call adds a chart.** Claude mounts a new view for every call, and earlier views stay.
 - **The relay keeps a request open.** The view's poll holds a request for up to 20 seconds. Whether a given host limits calls made from a view is not yet known.
 - **There is no authentication.** Anyone with the server's URL can draw charts. A chart can only be read or driven with its `viewId`, a random 24-character token.
-- **Six chart families so far.** The server does not take plotting code.
+- **Ten chart families, and no plotting code.** The model sends data for one of the types [above](#tools), and the server draws it. It deliberately takes no plotting code: anyone with its URL could run code on it. py-maidr's experimental plot types are left out until they have been tried with readers.
 
 ## Network and data
 
