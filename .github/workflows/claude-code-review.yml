@@ -106,11 +106,13 @@ jobs:
 
           # No github_token: the action exchanges this run's OIDC token for its
           # own app token and posts as claude[bot], as on maidr, py-maidr and
-          # r-maidr. That token would otherwise carry contents: write. A review
-          # has nothing to push, so ask for read; pull-requests: write, which
-          # `gh pr comment` needs, stays.
+          # r-maidr. That token would otherwise carry contents: write and
+          # issues: write, whatever the job's own permissions say. A review has
+          # nothing to push and no issue to edit, so ask for read on both;
+          # pull-requests: write, which `gh pr comment` needs, stays.
           additional_permissions: |
             contents: read
+            issues: read
 
           # Agent mode: no "Claude is working" tracking comment, and the review
           # arrives as one ordinary PR comment that Claude posts with
@@ -165,8 +167,10 @@ jobs:
           # can install, build, test and drive a browser. A gh-only allowlist
           # turns each of those into a permission denial and a review that
           # cannot check its own claims. What bounds it: the guard at the top
-          # (branches of this repository only), contents: read on the app token,
-          # and the rules in the prompt.
+          # (branches of this repository only), an app token whose only write
+          # access is to pull requests, and the rules in the prompt. Those
+          # rules are not a sandbox: the OAuth token is in the environment of
+          # every command, as the note on `env` above says.
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://docs.claude.com/en/docs/claude-code/cli-reference for available options
           claude_args: '--allowed-tools "Bash,Edit,Write"'
