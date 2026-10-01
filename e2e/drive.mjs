@@ -127,7 +127,8 @@ try {
   const context_ = await page.evaluate(
     () => [...document.querySelectorAll("div")].map((d) => d.textContent).find((t) => t.startsWith("📋 Model Context")) ?? "",
   );
-  check("the host receives the reader's position as model context", /Sun/.test(context_) && /76/.test(context_), context_);
+  // The last move was the model's, to Fri: the context follows the reader there, not only their keys.
+  check("the host's model context follows the reader, the model's moves included", /Fri/.test(context_) && /19/.test(context_), context_);
 
   check("no console errors or CSP reports", problems.length === 0, problems);
 } finally {

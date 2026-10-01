@@ -116,14 +116,17 @@ async function relay() {
         .callServerTool({ name: "maidr_view_reply", arguments: { viewId, callId: call.callId, result } })
         .catch(() => {});
     }
+    if (calls.length) refreshPosition();
   }
 }
 
 // The reader's position goes to the model for its next turn, so a question such as
-// "what is this point?" needs no tool call.
+// "what is this point?" needs no tool call. It is read again after anything that can move
+// the reader: their keys, their entering the chart (where a move kept for them lands), and
+// the model's own calls.
 let lastPosition = null;
 let pending;
-document.addEventListener("keyup", () => {
+function refreshPosition() {
   clearTimeout(pending);
   pending = setTimeout(async () => {
     const listed = await run({ tool: "maidr_list_charts" });
@@ -136,7 +139,9 @@ document.addEventListener("keyup", () => {
       })
       .catch(() => {});
   }, 300);
-}, true);
+}
+document.addEventListener("keyup", refreshPosition, true);
+document.addEventListener("focusin", refreshPosition, true);
 
 await app.connect();
 </script>
