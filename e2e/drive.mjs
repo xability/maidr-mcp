@@ -1,9 +1,14 @@
 // End-to-end check in ext-apps' reference host (basic-host): the chart is shown
 // through the host, a "model" calls the server's maidr_* tools over HTTP, and a
 // reader enters the chart and moves with the arrow keys. Then update_chart changes
-// the chart in its own view, with the reader outside it and inside it. Last, each other
-// chart family is shown the same way, in a page of its own, read by maidr, and moved
-// through. Exits non-zero on failure.
+// the chart in its own view, with the reader outside it and inside it, and a view
+// that missed an update catches up. Then each other chart family is shown the same
+// way, in a page of its own, read by maidr, and moved through; this comes after the
+// bar chart's checks, which count that page's views and follow the reader's focus in
+// it. Last, a host made to cut the view's poll after a few seconds, in a context of
+// its own, checks that the view falls back to short polls and still answers,
+// update_chart included; last, so that no other chart is open while it times the
+// polls. Exits non-zero on failure.
 //
 //   HOST_URL     the reference host        (default http://localhost:8080)
 //   SERVER_URL   maidr-mcp's MCP endpoint  (default http://localhost:3001/mcp)
@@ -20,8 +25,8 @@ function check(step, ok, detail) {
   if (!ok) failures.push(step);
 }
 
-/** A tools/call the way a model's host makes it. */
-async function callTool(name, args) {
+/** A tools/call the way a model's host makes it: the whole result. */
+async function callToolResult(name, args) {
   const response = await fetch(SERVER_URL, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -29,7 +34,37 @@ async function callTool(name, args) {
   });
   const body = await response.text();
   const line = body.split("\n").find((l) => l.startsWith("data: "));
-  return JSON.parse(line ? line.slice(6) : body).result.structuredContent;
+  return JSON.parse(line ? line.slice(6) : body).result;
+}
+
+/** A tools/call's structured result. */
+async function callTool(name, args) {
+  return (await callToolResult(name, args)).structuredContent;
+}
+
+/** A browser context that fetches the CDN through Node, which follows this machine's proxy settings. */
+async function newContext(browser) {
+  const context = await browser.newContext();
+  await context.route("https://cdn.jsdelivr.net/**", async (route) => {
+    const r = await fetch(route.request().url());
+    await route.fulfill({
+      status: r.status,
+      headers: { "content-type": r.headers.get("content-type") ?? "" },
+      body: Buffer.from(await r.arrayBuffer()),
+    });
+  });
+  return context;
+}
+
+/** The arguments of a maidr_view_poll the host sends to the server, or undefined for any other request. */
+function pollArguments(request) {
+  if (request.url() !== SERVER_URL || request.method() !== "POST") return undefined;
+  try {
+    const body = request.postDataJSON();
+    return body?.params?.name === "maidr_view_poll" ? body.params.arguments : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Shows `chart` through the host as a model's call would, and returns its view and viewId. */
@@ -179,15 +214,15 @@ const families = [
 
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined });
 try {
-  const context = await browser.newContext();
-  // Fetch the CDN through Node, which follows this machine's proxy settings.
-  await context.route("https://cdn.jsdelivr.net/**", async (route) => {
-    const r = await fetch(route.request().url());
-    await route.fulfill({
-      status: r.status,
-      headers: { "content-type": r.headers.get("content-type") ?? "" },
-      body: Buffer.from(await r.arrayBuffer()),
-    });
+  const context = await newContext(browser);
+  const waits = []; // the wait of each poll the view makes
+  const revisions = []; // and the revision of the chart it says it shows
+  context.on("request", (request) => {
+    const args = pollArguments(request);
+    if (args) {
+      waits.push(args.wait);
+      revisions.push(args.revision);
+    }
   });
   const page = await context.newPage();
   const problems = watch(page);
@@ -337,8 +372,49 @@ try {
   );
   check("  and the model context follows them there", /Noon|Evening|Night/.test(contextAfter) && !/Fri/.test(contextAfter), contextAfter);
 
+  // A view that misses an update catches up on its next poll, which the server answers at once,
+  // long before its wait is up: the view must not take that answer for a cut. The host holds the
+  // view's next poll back until update_chart has given up on the view.
+  let releasePoll;
+  const pollReleased = new Promise((resolve) => (releasePoll = resolve));
+  let pollHeld = false;
+  await context.route(SERVER_URL, async (route) => {
+    if (pollHeld || !pollArguments(route.request())) return route.fallback();
+    pollHeld = true;
+    await pollReleased;
+    await route.fallback();
+  });
+  await callTool("maidr_list_charts", { viewId }); // answers the poll in flight; the next is held
+  for (let i = 0; i < 50 && !pollHeld; i++) await sleep(100);
+  const missed = await callToolResult("update_chart", { viewId, chart });
+  const missedText = missed?.content?.[0]?.text ?? "";
+  const heldAt = waits.length;
+  releasePoll();
+  let caught;
+  for (let i = 0; i < 50; i++) {
+    caught = await shown();
+    if (waits.length > heldAt && caught.status === "Chart updated: The Number of Tips by Day") break;
+    await sleep(200);
+  }
+  await context.unroute(SERVER_URL);
+  check(
+    "a view that missed an update catches up on its next poll",
+    pollHeld && missed?.isError && /keeps the new chart/.test(missedText) && caught.status === "Chart updated: The Number of Tips by Day" && caught.svgs === 1 && /Thur/.test(caught.maidr),
+    { pollHeld, missed: missedText, status: caught.status, svgs: caught.svgs },
+  );
+  check("  and a reader in the chart stays in it", caught.hasFocus && caught.onChart, { hasFocus: caught.hasFocus, onChart: caught.onChart });
+  check(
+    "  and it keeps to long polls, now on the server's revision",
+    waits.length > heldAt && waits.slice(heldAt).every((w) => w === 20) && revisions.at(-1) === 3,
+    { waits: waits.slice(heldAt), revisions: revisions.slice(heldAt) },
+  );
+
+  check("the reference host holds long polls, and the view keeps to them", waits.length > 0 && waits.every((w) => w === 20), waits);
   check("no console errors or CSP reports", problems.length === 0, problems);
 
+  // Each other family in a page of its own, in this same host: the bar chart's page and its
+  // focus are left as they are, and its checks are all done. The poll listener above sees
+  // these pages' polls too, but only reads them, and nothing checks the waits after this.
   for (const family of families) {
     const name = family.chart.type + (family.chart.trend ? " with a trend line" : "");
     const page = await context.newPage();
@@ -385,6 +461,73 @@ try {
     check(`${name}: no console errors or CSP reports`, problems.length === 0, problems);
     await page.close();
   }
+  // Closed before the next host opens, so that no other chart polls while it times them.
+  await context.close();
+
+  // A host that will not hold a request open: it cuts the view's poll after CUT_MS. The
+  // view's long poll fails, it falls back to short polls, and the model is still answered.
+  const CUT_MS = 3_000;
+  const cutting = await newContext(browser);
+  const polls = []; // { wait, at, carried } for each poll the view makes
+  await cutting.route(SERVER_URL, async (route) => {
+    const args = pollArguments(route.request());
+    if (!args) return route.fallback();
+    const poll = { wait: args.wait, at: Date.now(), carried: false };
+    polls.push(poll);
+    try {
+      const response = await route.fetch({ timeout: CUT_MS });
+      poll.carried = (await response.text()).includes('"callId"');
+      await route.fulfill({ response });
+    } catch {
+      await route.abort("timedout");
+    }
+  });
+  const cutPage = await cutting.newPage();
+  const cspReports = []; // the cut requests are logged as errors, so only CSP counts here
+  cutPage.on("console", (m) => {
+    if (/Content Security Policy/i.test(m.text())) cspReports.push(m.text());
+  });
+
+  const cut = await showChart(cutPage, chart);
+  check("a host that cuts long polls shows the chart view", !!cut.view);
+  if (!cut.view) throw new Error("no chart view in the host that cuts long polls");
+  for (let i = 0; i < 75 && !polls.some((p) => p.wait === 0); i++) await sleep(200);
+  check("  its long poll is cut, and the view falls back to short polls", polls[0]?.wait === 20 && polls.some((p) => p.wait === 0), polls.map((p) => p.wait));
+
+  const asked = Date.now();
+  const cutListed = await callTool("maidr_list_charts", { viewId: cut.viewId });
+  const cutLayer = cutListed.content?.charts?.[0]?.layers?.[0];
+  check(
+    "  a short poll carries the model's call, and maidr answers inside the reply window",
+    cutListed.ok && cutLayer?.type === "bar" && polls.some((p) => p.wait === 0 && p.carried),
+    { ok: cutListed.ok, ms: Date.now() - asked, error: cutListed.error },
+  );
+
+  const cutData = await callTool("maidr_get_layer_data", { viewId: cut.viewId, layerId: cutLayer?.layerId });
+  const cutTop = (cutData.content?.points ?? []).reduce((a, b) => (!a || b.point.y > a.point.y ? b : a), undefined);
+  const cutAway = await callTool("maidr_navigate", { viewId: cut.viewId, layerId: cutLayer?.layerId, ...cutTop?.target });
+  check("  and a move is kept for the reader", cutAway.ok && cutAway.applied === "on-next-focus", cutAway.applied ?? cutAway.error);
+
+  const updateAsked = Date.now();
+  const cutUpdated = await callTool("update_chart", { viewId: cut.viewId, chart: byTime });
+  const cutStatus = await cut.view.evaluate(() => document.getElementById("status").textContent);
+  const carried = polls.filter((p) => p.carried);
+  check(
+    "  a short poll carries update_chart, and the chart changes inside the reply window",
+    cutUpdated?.readerInChart === false && cutStatus === "Chart updated: Tips by Time" && carried.at(-1)?.wait === 0,
+    { ms: Date.now() - updateAsked, readerInChart: cutUpdated?.readerInChart, status: cutStatus, wait: carried.at(-1)?.wait },
+  );
+
+  const short = polls.filter((p) => p.wait === 0);
+  const gaps = short.slice(1).map((p, i) => p.at - short[i].at);
+  check("  short polls come at most one every 2 seconds", gaps.length > 0 && Math.min(...gaps) >= 1_500, gaps);
+
+  await cutPage.getByTitle("Close").first().click();
+  await sleep(1_000);
+  const polled = polls.length;
+  await sleep(5_000);
+  check("  closing the chart stops its polls", polls.length === polled, polls.length - polled);
+  check("  no CSP reports", cspReports.length === 0, cspReports);
 } finally {
   await browser.close();
 }

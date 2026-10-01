@@ -49,7 +49,8 @@ Object.defineProperty(document, "modelContext", {
 const app = new App({ name: "maidr chart", version: "1" });
 let viewId;
 let revision = 0; // the server's revision of the chart shown; show_chart's is 0
-let stopped = false;
+// Aborted when the host tears the view down: the relay stops, and a poll in flight is cancelled.
+const stop = new AbortController();
 
 app.addEventListener("toolresult", (result) => {
   if (viewId !== undefined || result.isError) return;
@@ -57,7 +58,7 @@ app.addEventListener("toolresult", (result) => {
   if (typeof viewId === "string") void show(result._meta?.["ai.maidr/svg"]);
 });
 app.onteardown = async () => {
-  stopped = true;
+  stop.abort();
   return {};
 };
 
@@ -105,11 +106,14 @@ async function run(call) {
 // maidr lets go of the old chart (maidr:unbindchart unmounts it and drops it from its tools)
 // and binds the new one as it enters the page. A reader who was in the chart is put back in
 // it, on the new chart, since the old one took their focus with it; anyone else keeps theirs.
-// Either way the status line says the chart changed.
-async function update() {
-  const fetched = await app.callServerTool({ name: "maidr_view_svg", arguments: { viewId } }).catch(() => null);
-  const svg = fetched?.structuredContent?.svg;
-  const latest = fetched?.structuredContent?.revision;
+// Either way the status line says the chart changed. The poll that finds the view behind
+// brings the chart, {svg, revision}; when one does not, the view fetches it.
+async function update(brought) {
+  const fetched =
+    brought ??
+    (await app.callServerTool({ name: "maidr_view_svg", arguments: { viewId } }).catch(() => null))?.structuredContent;
+  const svg = fetched?.svg;
+  const latest = fetched?.revision;
   if (typeof svg !== "string" || typeof latest !== "number") {
     return { ok: false, error: "the chart view could not fetch the new chart" };
   }
@@ -161,37 +165,125 @@ async function bound(plot, chartId, hadTools) {
   return null;
 }
 
+// How the view fetches the model's calls. A long poll is held by the server until a call
+// comes or LONG_WAIT runs out, so a call reaches maidr at once and an idle chart makes one
+// request every 20 seconds. A host may cut a request held that long, or refuse it. When a long
+// poll fails, or comes back empty before its wait is up, the view switches to short polls,
+// which the server answers at once. It tries a long poll again after LONG_RETRY, and doubles
+// that each time a long poll fails, so on a host that cuts them it settles on short polls
+// rather than flipping back and forth.
+//
+// Every poll also says which revision of the chart the view shows. The server answers a view
+// that is behind at once, whatever its wait, with the chart it missed, so the view catches up
+// with update_chart without the answer being taken for a cut (see poll()).
+//
+// Short polls still answer the model within the server's reply window (reply_seconds, 10 s),
+// update_chart's call included. At worst a call reaches the server just after a short poll has
+// left it, and then takes
+//     3 s waiting for the next poll: SHORT_EVERY, 2 s, or a poll's round trip through the
+//     host when that is longer; say 3 s on a slow host
+//   + one round trip through the host: that poll's answer to the view, and the view's reply
+//     back to the server; 3 s
+//   + maidr running the call, or binding the chart update_chart drew, well under 1 s
+//   = under 7 s, 3 s inside the window.
+// update_chart takes no more round trips than maidr's calls: the poll that hands the view its
+// maidr_view_update brings the new chart too. Fetching it with maidr_view_svg instead would
+// add a round trip, and take a slow host to the edge of the window.
+// The interval does not grow while the chart is idle, since a call may come at any moment;
+// only failed polls back off, while calls cannot be answered anyway. Polls start at least
+// MIN_GAP apart, so a chart polls once a second at most, and 30 times a minute on short polls.
+//
+// Cut detection assumes the server holds a poll for its whole wait (Relay's poll_seconds, 20):
+// lowering poll_seconds below LONG_WAIT would make every long poll look cut.
+const LONG_WAIT = 20; // s: the longest the server holds a poll
+const SHORT_EVERY = 2_000; // ms between the starts of two short polls
+const MIN_GAP = 1_000; // ms between the starts of any two polls: one a second at most
+const MAX_BACKOFF = 30_000; // ms: the longest pause after short polls fail
+const LONG_RETRY = 60_000; // ms on short polls before a long poll is tried again
+const MAX_LONG_RETRY = 30 * 60_000;
+const CATCH_UP_RETRY = 5_000; // ms after a failed catch-up: the next poll would ask again at once
+
 async function relay() {
-  let backoff = 1000;
-  while (!stopped) {
-    let calls;
-    let latest;
-    try {
-      const polled = await app.callServerTool(
-        { name: "maidr_view_poll", arguments: { viewId, revision } },
-        { timeout: 45_000 },
-      );
-      calls = polled.structuredContent?.calls ?? [];
-      latest = polled.structuredContent?.revision ?? 0;
-      backoff = 1000;
-    } catch {
-      await sleep(backoff);
-      backoff = Math.min(backoff * 2, 30_000);
+  let wait = LONG_WAIT; // seconds the server may hold the next poll
+  let longRetry = LONG_RETRY; // what the view has learned of the host: grows with each cut
+  let longAgain = 0; // when to try a long poll again
+  let failures = 0; // short polls failed in a row
+  let lastPoll = -Infinity; // when the last poll started
+  while (!stop.signal.aborted) {
+    if (!wait && !failures && performance.now() >= longAgain) wait = LONG_WAIT;
+    await pause(lastPoll + (wait ? MIN_GAP : SHORT_EVERY) - performance.now());
+    if (stop.signal.aborted) break;
+    lastPoll = performance.now();
+    const polled = await poll(wait);
+    if (stop.signal.aborted) break;
+    if (!polled && wait) {
+      // The host does not hold a poll this long, or not now: poll short from here on.
+      wait = 0;
+      longAgain = performance.now() + longRetry;
+      longRetry = Math.min(longRetry * 2, MAX_LONG_RETRY);
       continue;
     }
+    if (!polled) {
+      // Short polls fail too: the host or the server is down. Back off.
+      failures += 1;
+      await pause(Math.min(SHORT_EVERY * 2 ** failures, MAX_BACKOFF));
+      continue;
+    }
+    failures = 0;
+    const { calls, latest, svg } = polled;
+    const brought = typeof svg === "string" ? { svg, revision: latest } : undefined;
     // Behind the server with no update on its way: this view missed one, while out of view
     // or because the host mounted it again from show_chart's result.
     if (latest > revision && !calls.some((call) => call.tool === UPDATE)) {
-      if (!(await update()).ok) await sleep(5_000); // the next poll would ask again at once
+      if (!(await update(brought)).ok) await pause(CATCH_UP_RETRY);
     }
     for (const call of calls) {
-      const result = call.tool === UPDATE ? await update() : await run(call);
+      const result = call.tool === UPDATE ? await update(brought) : await run(call);
       await app
         .callServerTool({ name: "maidr_view_reply", arguments: { viewId, callId: call.callId, result } })
         .catch(() => {});
     }
     if (calls.length) refreshPosition();
   }
+}
+
+// One poll: what the server hands over, {calls, latest, svg}, or null when the poll failed or
+// was cut. latest is the chart's revision on the server; a view behind it gets that chart's
+// svg as well. The server answers before a poll's wait is up only to hand over a call, or, at
+// once, to a view that is behind it. So an early answer is the server's when it carries a call
+// (update_chart's among them) or says the view is behind (the catch-up for an update the view
+// missed); an early empty answer that says neither was cut short on the way.
+async function poll(wait) {
+  const shown = revision; // what this poll tells the server the view shows
+  const started = performance.now();
+  try {
+    const polled = await app.callServerTool(
+      { name: "maidr_view_poll", arguments: { viewId, revision: shown, wait } },
+      { timeout: (wait + 25) * 1000, signal: stop.signal }, // the hold, and time for the host
+    );
+    const calls = polled.structuredContent?.calls;
+    if (polled.isError || !Array.isArray(calls)) return null;
+    const latest = polled.structuredContent?.revision ?? 0;
+    const early = performance.now() - started < (wait - 1) * 1000;
+    if (early && !calls.length && !(latest > shown)) return null;
+    return { calls, latest, svg: polled.structuredContent?.svg };
+  } catch {
+    return null;
+  }
+}
+
+// Resolves after ms, or at once when the view is torn down.
+function pause(ms) {
+  return new Promise((resolve) => {
+    if (stop.signal.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      stop.signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, Math.max(0, ms));
+    stop.signal.addEventListener("abort", done);
+  });
 }
 
 // The reader's position goes to the model for its next turn, so a question such as

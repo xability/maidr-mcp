@@ -14,7 +14,7 @@ from pydantic import Field
 
 from maidr_mcp import __version__
 from maidr_mcp.charts import Chart, Rendered, render
-from maidr_mcp.relay import UNKNOWN_VIEW, Relay
+from maidr_mcp.relay import POLL_SECONDS, UNKNOWN_VIEW, Relay
 
 VIEW_URI = "ui://maidr/chart.html"
 SVG_META_KEY = "ai.maidr/svg"
@@ -57,6 +57,16 @@ ChartId = Annotated[
 ]
 LayerId = Annotated[
     str, Field(min_length=1, max_length=256, description="A layerId from maidr_list_charts.")
+]
+PollWait = Annotated[
+    float,
+    Field(
+        ge=0,
+        le=POLL_SECONDS,
+        allow_inf_nan=False,
+        description="Seconds to wait for a call when none is waiting: 20 holds the request open, "
+        "0 answers at once, for a host that cuts requests held open.",
+    ),
 ]
 
 
@@ -104,7 +114,8 @@ def build_server(relay: Relay | None = None) -> MCPServer:
         visibility=["app"],
         name="maidr_view_svg",
         description="The latest SVG of a chart view and its revision: for a host that does not "
-        "pass the tool result's _meta to it, and for the view to swap in update_chart's chart.",
+        "pass the tool result's _meta to it, and for the view to swap in update_chart's chart "
+        "when its poll did not bring it.",
     )
     async def maidr_view_svg(viewId: ViewId) -> dict[str, Any]:  # noqa: N803
         return {"svg": relay.svg(viewId), "revision": relay.revision(viewId)}
@@ -113,20 +124,29 @@ def build_server(relay: Relay | None = None) -> MCPServer:
         resource_uri=VIEW_URI,
         visibility=["app"],
         name="maidr_view_poll",
-        description="The model's calls waiting for a chart view; waits up to 20 seconds for one, "
-        "unless the view is behind the chart's latest revision.",
+        description="The model's calls waiting for a chart view; waits up to `wait` seconds "
+        "for one, unless the view is behind the chart's latest revision, when it answers at "
+        "once with that chart's SVG.",
     )
     async def maidr_view_poll(
         viewId: ViewId,  # noqa: N803
         revision: Annotated[int | None, Field(ge=0)] = None,
+        wait: PollWait = POLL_SECONDS,
     ) -> dict[str, Any]:
-        calls = await relay.poll(viewId, revision)
-        return {
+        calls = await relay.poll(viewId, revision=revision, wait=wait)
+        latest = relay.revision(viewId)
+        polled: dict[str, Any] = {
             "calls": [
                 {"callId": c.call_id, "tool": c.tool, "arguments": c.arguments} for c in calls
             ],
-            "revision": relay.revision(viewId),
+            "revision": latest,
         }
+        if revision is not None and revision < latest:
+            # The chart to swap in rides with the poll: fetching it with maidr_view_svg would
+            # cost the view a round trip more, which on short polls could take update_chart
+            # past its reply window.
+            polled["svg"] = relay.svg(viewId)
+        return polled
 
     @apps.tool(
         resource_uri=VIEW_URI,

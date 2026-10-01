@@ -1,9 +1,11 @@
 """Hands the model's calls to the chart view that runs them.
 
 No host passes a view's own tools to the model yet (ext-apps #797), so each
-model-facing ``maidr_*`` tool queues its call here. The chart's view long-polls
-for it through an app-only tool, runs it on maidr.js's own WebMCP tool, and
-posts maidr's answer back, which becomes the model's tool result.
+model-facing ``maidr_*`` tool queues its call here. The chart's view polls for
+it through an app-only tool, runs it on maidr.js's own WebMCP tool, and posts
+maidr's answer back, which becomes the model's tool result. The view's poll
+says how long the server may hold it: a long poll waits for a call, and a short
+one, for a host that cuts requests held open, answers at once.
 
 A ``viewId`` is the only key to a chart: a model call names one, and nothing
 falls back to "the only open chart", which on a shared server could be another
@@ -26,6 +28,8 @@ from typing import Any
 
 import anyio
 
+POLL_SECONDS = 20.0  # the longest a view's poll is held
+
 UPDATE = "maidr_view_update"
 """The call that tells a view to swap in the chart the server now holds for it."""
 
@@ -46,7 +50,7 @@ class _View:
     svg: str | None = None
     revision: int = 0  # how many times update_chart replaced the chart show_chart drew
     queue: list[Call] = field(default_factory=list)
-    wake: anyio.Event | None = None  # set by a call; made by the poll waiting for it
+    wake: anyio.Event | None = None  # set by a call; made by the latest poll, if it waits
     seen: float = field(default_factory=time.monotonic)
 
 
@@ -61,7 +65,7 @@ class Relay:
     """Per-view queues of model calls, and the answers coming back.
 
     Args:
-        poll_seconds: How long a view's poll waits for a call before returning empty.
+        poll_seconds: The longest a view's poll waits for a call before returning empty.
         reply_seconds: How long a model call waits for the view's answer.
         idle_seconds: How long a view may go without polling before it is forgotten.
         max_views: The most views held at once.
@@ -71,7 +75,7 @@ class Relay:
     def __init__(
         self,
         *,
-        poll_seconds: float = 20.0,
+        poll_seconds: float = POLL_SECONDS,
         reply_seconds: float = 10.0,
         idle_seconds: float = 900.0,
         max_views: int = 10_000,
@@ -156,15 +160,21 @@ class Relay:
             "conversation; ask the reader to bring it back into view.",
         }
 
-    async def poll(self, view_id: str, revision: int | None = None) -> list[Call]:
-        """The calls waiting for a view, after waiting up to ``poll_seconds`` for one.
+    async def poll(
+        self, view_id: str, revision: int | None = None, wait: float | None = None
+    ) -> list[Call]:
+        """The calls waiting for a view, after waiting up to ``wait`` seconds for one.
+
+        ``wait`` defaults to, and is capped at, ``poll_seconds``; 0 answers at once.
 
         ``revision`` is the revision of the chart the view shows. A view behind the server's
-        is answered at once, so that it fetches the chart it missed.
+        is answered at once, whatever its ``wait``, so that it fetches the chart it missed.
+        Otherwise a poll that waits is held for its whole wait unless a call comes for it.
 
         A view the server does not know, after a restart, is taken back: it holds the id, and
         the chart it shows is the latest the server knows of.
         """
+        wait = self.poll_seconds if wait is None else min(max(wait, 0.0), self.poll_seconds)
         view = self._views.get(view_id)
         if view is None:
             self._sweep()
@@ -172,10 +182,18 @@ class Relay:
                 return []
             view = self._views[view_id] = _View(revision=revision or 0)
         view.seen = time.monotonic()
-        if not view.queue and (revision is None or revision >= view.revision):
-            view.wake = anyio.Event()
-            with anyio.move_on_after(self.poll_seconds):
-                await view.wake.wait()
+        # A view polls again only once its last poll has come back, so a poll still waiting
+        # here was cut short by the host and nobody will read its answer (or, rarely, it is a
+        # second copy of the chart's, which polls again). Only the latest poll takes calls,
+        # a poll answered at once for a view that is behind included.
+        view.wake = None
+        behind = revision is not None and revision < view.revision
+        if not view.queue and not behind and wait > 0:
+            wake = view.wake = anyio.Event()
+            with anyio.move_on_after(wait):
+                await wake.wait()
+            if view.wake is not wake:
+                return []  # a later poll has come in, and the calls are its to take
         view.seen = time.monotonic()
         calls, view.queue = view.queue, []
         return calls

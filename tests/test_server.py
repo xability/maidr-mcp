@@ -1,10 +1,12 @@
 """What a host sees of the server: tools, the chart view, and calls relayed through it."""
 
+import re
+
 import anyio
 import pytest
 from mcp import Client
 
-from maidr_mcp.relay import Relay
+from maidr_mcp.relay import POLL_SECONDS, Relay
 from maidr_mcp.server import (
     CDN,
     MAIDR_JS_VERSION,
@@ -52,6 +54,15 @@ def test_the_maidr_js_version_can_be_pinned(monkeypatch):
     assert "maidr@4.10.0/dist/maidr.js" in view_html()
 
 
+def test_the_view_waits_on_a_long_poll_as_long_as_the_server_holds_it():
+    # The view reads a long poll that comes back early and empty as cut by the host. Held for
+    # less than LONG_WAIT, every long poll would look cut and the view would fall back to
+    # short polls on every host.
+    long_wait = re.search(r"const LONG_WAIT = (\d+);", view_html())
+    assert long_wait is not None
+    assert float(long_wait.group(1)) == POLL_SECONDS
+
+
 async def test_show_chart_gives_the_model_a_view_id_and_the_view_its_svg():
     async with Client(build_server()) as client:
         result = await client.call_tool("show_chart", {"chart": BAR})
@@ -92,6 +103,27 @@ async def test_a_model_call_is_relayed_to_the_view_and_answered():
         assert svg.structured_content["svg"].startswith("<svg")
 
 
+async def test_the_view_says_how_long_its_poll_may_wait():
+    async with Client(build_server()) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+        wait = tools["maidr_view_poll"].input_schema["properties"]["wait"]
+        assert (wait["minimum"], wait["maximum"], wait["default"]) == (0, 20, 20)
+        with anyio.fail_after(2):  # a short poll, for a host that cuts long ones
+            polled = await client.call_tool("maidr_view_poll", {"viewId": "v", "wait": 0})
+        assert polled.structured_content == {"calls": [], "revision": 0}
+        for bad in (-1, 21, "soon"):
+            refused = await client.call_tool("maidr_view_poll", {"viewId": "v", "wait": bad})
+            assert refused.is_error, bad
+
+
+async def test_a_poll_without_a_wait_holds_as_long_as_the_relay_allows():
+    async with Client(build_server(Relay(poll_seconds=0.2))) as client:
+        started = anyio.current_time()
+        polled = await client.call_tool("maidr_view_poll", {"viewId": "v"})
+        assert anyio.current_time() - started >= 0.2
+    assert polled.structured_content == {"calls": [], "revision": 0}
+
+
 async def test_a_layer_without_a_point_count_is_named_without_one():
     heatmap = {"type": "heatmap", "x_labels": ["a"], "y_labels": ["r"], "values": [[1]]}
     async with Client(build_server()) as client:
@@ -118,6 +150,7 @@ async def test_update_chart_replaces_the_chart_in_the_open_view():
             (call,) = polled.structured_content["calls"]
             assert call["tool"] == "maidr_view_update"
             assert polled.structured_content["revision"] == 1
+            assert "Dinner" in polled.structured_content["svg"]  # the poll brings the chart
             fetched = await client.call_tool("maidr_view_svg", {"viewId": view_id})
             assert fetched.structured_content["revision"] == 1
             assert "Dinner" in fetched.structured_content["svg"]
@@ -194,6 +227,24 @@ async def test_an_update_the_view_does_not_answer_is_kept_for_it():
         fetched = await client.call_tool("maidr_view_svg", {"viewId": view_id})
     assert fetched.structured_content["revision"] == 1
     assert "Dinner" in fetched.structured_content["svg"]
+
+
+async def test_a_view_behind_is_answered_at_once_with_the_chart_it_missed():
+    async with Client(build_server(Relay(reply_seconds=0.1))) as client:
+        shown = await client.call_tool("show_chart", {"chart": BAR})
+        view_id = shown.structured_content["viewId"]
+        await client.call_tool("update_chart", {"viewId": view_id, "chart": LINE})  # unanswered
+        with anyio.fail_after(2):  # a long poll, from a view still showing show_chart's chart
+            behind = await client.call_tool(
+                "maidr_view_poll", {"viewId": view_id, "revision": 0, "wait": 20}
+            )
+            current = await client.call_tool(
+                "maidr_view_poll", {"viewId": view_id, "revision": 1, "wait": 0}
+            )
+    assert behind.structured_content["calls"] == []
+    assert behind.structured_content["revision"] == 1
+    assert "Dinner" in behind.structured_content["svg"]
+    assert current.structured_content == {"calls": [], "revision": 1}  # no SVG once caught up
 
 
 async def test_an_update_the_view_could_not_make_is_an_error():

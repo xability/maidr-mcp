@@ -15,8 +15,10 @@ The model calls `show_chart` with the data, and the chart appears in the convers
 2. The view loads [maidr.js](https://github.com/xability/maidr) and the MCP Apps SDK from `cdn.jsdelivr.net`, the only domain its CSP declares, at pinned versions.
 3. maidr.js registers its own [WebMCP tools](https://github.com/xability/maidr/blob/main/docs/WEBMCP.md) on `document.modelContext`. No host hands a view's tools to the model yet ([ext-apps#797](https://github.com/modelcontextprotocol/ext-apps/issues/797)), so the view supplies `document.modelContext` itself. Each server tool of the same name relays its call to the view that is open:
    - the model calls the server tool;
-   - the view long-polls an app-only tool, picks up the call, runs maidr's tool, and posts maidr's answer back;
+   - the view polls an app-only tool, picks up the call, runs maidr's tool, and posts maidr's answer back;
    - that answer becomes the model's tool result.
+
+   The poll is a long poll: the server holds it for up to 20 seconds until a call comes, so the call reaches the chart at once. If the host cuts or refuses a request held that long, the view falls back to short polls, which the server answers at once, one every 2 seconds, so the model's call is still answered within the 10 seconds the server waits for the chart. The view tries a long poll again after a minute, and waits twice as long after each one the host cuts.
 
    If hosts adopt WebMCP for MCP Apps, as [ext-apps#798](https://github.com/modelcontextprotocol/ext-apps/pull/798) proposes, maidr's tools reach the model directly and the relay can go.
 4. On each key the reader presses in the chart, the view sends their position with `ui/update-model-context`.
@@ -139,15 +141,17 @@ It checks:
 - the arrow keys announce, and the reader's position reaches the host as model context;
 - a move made while the reader is in the chart is announced at once;
 - `update_chart` changes the chart in its own view, with no view added: a reader outside it keeps their focus, a reader in it stays in it, both are told, and maidr reads only the new chart;
+- a view that missed an update catches up on its next poll, and keeps to long polls;
+- there are no console errors or CSP violations;
 - a step, violin, pie and candlestick chart and a scatter with a trend line each appear: maidr reads each as the layers in the [table above](#tools), ArrowRight announces its first point, and a move the model asks for is announced, or refused by maidr where the table says so;
-- there are no console errors or CSP violations.
+- when the host cuts long polls, the view falls back to short polls, still answers the model, `update_chart` included, and stops polling when the chart is closed.
 
 ## Limits
 
 - **The model learns the reader's position one turn late.** It sees the position on its next turn, not in the middle of one.
 - **Moves wait until the reader is in the chart.** maidr never moves focus. A move made while the reader is typing to the model is kept, and announced when they Tab back into the chart. `maidr_navigate` says so (`applied: "on-next-focus"`), and the model should tell them.
 - **Each `show_chart` call still adds a chart.** Claude mounts a new view for every call to a tool with a UI, and keeps the earlier ones. A chart that changes stays in its view only when the model calls `update_chart`, as the server's instructions ask; a second `show_chart` is a second view.
-- **The relay keeps a request open.** The view's poll holds a request for up to 20 seconds. Whether a given host limits calls made from a view is not yet known.
+- **The relay polls.** Each open chart makes a request every 20 seconds, or every 2 seconds on a host that cuts requests held open, where a model's call can also take up to 2 seconds longer to reach the chart. A host that also allows a view fewer than 30 calls a minute leaves some of the model's calls unanswered. Which hosts limit calls from a view is not yet known. The same chart open twice, say in two tabs, makes each copy read the other's polls as cuts, so both settle on short polls.
 - **Access is one shared token, and only if you set one.** Without a token, anyone with the server's URL can draw charts. Set `MAIDR_MCP_TOKEN` and every request needs it; Claude and ChatGPT carry it in the URL. That URL, kept in the host's connector settings, is then the secret; rotating it means restarting the server with a new token and updating each host. Full OAuth is not implemented. See [An access token](#an-access-token). A chart can only be read or driven with its `viewId`, a random 24-character token.
 - **Ten chart families, and no plotting code.** The model sends data for one of the types [above](#tools), and the server draws it. It deliberately takes no plotting code: anyone with its URL could run code on it. py-maidr's experimental plot types are left out until they have been tried with readers.
 
