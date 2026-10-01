@@ -105,13 +105,16 @@ class Relay:
         view.queue.append(call)
         if view.wake is not None:
             view.wake.set()
-        with anyio.move_on_after(self.reply_seconds):
-            await waiting.done.wait()
-        self._waiting.pop(call.call_id, None)
+        try:
+            with anyio.move_on_after(self.reply_seconds):
+                await waiting.done.wait()
+        finally:
+            # Also when the model's request is cancelled mid-wait: nothing may linger.
+            self._waiting.pop(call.call_id, None)
+            if waiting.result is None and call in view.queue:
+                view.queue.remove(call)  # never picked up: a returning view must not run it late
         if waiting.result is not None:
             return waiting.result
-        if call in view.queue:  # never picked up: do not let a returning view run it late
-            view.queue.remove(call)
         return {
             "ok": False,
             "error": "the chart did not answer. It may have been closed, or scrolled out of the "

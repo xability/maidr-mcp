@@ -89,6 +89,15 @@ async def test_idle_views_are_forgotten():
     assert relay.svg(old) is None
 
 
+async def test_a_cancelled_call_leaves_nothing_behind():
+    relay = Relay(max_queue=1)
+    view_id = relay.open()
+    with anyio.move_on_after(0.05):  # the model's request goes away mid-wait
+        await relay.call(view_id, "maidr_list_charts", {})
+    assert relay._waiting == {}
+    assert relay._views[view_id].queue == []  # the slot is free for the next call
+
+
 async def test_limits():
     relay = Relay(max_views=1, max_queue=1, reply_seconds=0.1)
     view_id = relay.open()
