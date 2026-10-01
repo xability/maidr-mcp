@@ -1,8 +1,10 @@
 // End-to-end check in ext-apps' reference host (basic-host): the chart is shown
 // through the host, a "model" calls the server's maidr_* tools over HTTP, and a
-// reader enters the chart and moves with the arrow keys. Then the same host, made
-// to cut the view's poll after a few seconds, checks that the view falls back to
-// short polls and still answers. Exits non-zero on failure.
+// reader enters the chart and moves with the arrow keys. Then update_chart changes
+// the chart in its own view, with the reader outside it and inside it, and a view
+// that missed an update catches up. Then the same host, made to cut the view's poll
+// after a few seconds, checks that the view falls back to short polls and still
+// answers, update_chart included. Exits non-zero on failure.
 //
 //   HOST_URL     the reference host        (default http://localhost:8080)
 //   SERVER_URL   maidr-mcp's MCP endpoint  (default http://localhost:3001/mcp)
@@ -19,8 +21,8 @@ function check(step, ok, detail) {
   if (!ok) failures.push(step);
 }
 
-/** A tools/call the way a model's host makes it. */
-async function callTool(name, args) {
+/** A tools/call the way a model's host makes it: the whole result. */
+async function callToolResult(name, args) {
   const response = await fetch(SERVER_URL, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -28,7 +30,12 @@ async function callTool(name, args) {
   });
   const body = await response.text();
   const line = body.split("\n").find((l) => l.startsWith("data: "));
-  return JSON.parse(line ? line.slice(6) : body).result.structuredContent;
+  return JSON.parse(line ? line.slice(6) : body).result;
+}
+
+/** A tools/call's structured result. */
+async function callTool(name, args) {
+  return (await callToolResult(name, args)).structuredContent;
 }
 
 const chart = {
@@ -95,9 +102,13 @@ const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || 
 try {
   const context = await newContext(browser);
   const waits = []; // the wait of each poll the view makes
+  const revisions = []; // and the revision of the chart it says it shows
   context.on("request", (request) => {
     const args = pollArguments(request);
-    if (args) waits.push(args.wait);
+    if (args) {
+      waits.push(args.wait);
+      revisions.push(args.revision);
+    }
   });
   const page = await context.newPage();
   const problems = [];
@@ -160,6 +171,150 @@ try {
   // The last move was the model's, to Fri: the context follows the reader there, not only their keys.
   check("the host's model context follows the reader, the model's moves included", /Fri/.test(context_) && /19/.test(context_), context_);
 
+  // update_chart replaces the chart in the view show_chart mounted. The host mounts a view for
+  // every call to a tool with a UI, so this first update goes through the host, which also
+  // leaves the reader in the host page, outside the chart.
+  const chartViews = async () => {
+    let n = 0;
+    for (const frame of page.frames()) {
+      if (await frame.evaluate(() => !!document.getElementById("chart")).catch(() => false)) n++;
+    }
+    return n;
+  };
+  const shown = () =>
+    view.evaluate(() => {
+      const svgs = document.querySelectorAll("svg[maidr]");
+      const focused = document.activeElement;
+      return {
+        svgs: svgs.length,
+        figures: document.querySelectorAll("figure").length,
+        maidr: svgs[0]?.getAttribute("maidr") ?? "",
+        status: document.getElementById("status").textContent,
+        hasFocus: document.hasFocus(),
+        onChart: !!focused?.matches('[tabindex="0"]') && !!svgs[0] && focused.contains(svgs[0]),
+      };
+    });
+  const onlyChart = async () => {
+    const listed_ = await callTool("maidr_list_charts", { viewId });
+    const charts = listed_.content?.charts ?? [];
+    return { count: charts.length, chartId: charts[0]?.chartId, layer: charts[0]?.layers?.[0] };
+  };
+  const firstChartId = listed.content.charts[0].chartId;
+  const byTime = {
+    type: "bar",
+    title: "Tips by Time",
+    x_label: "Time",
+    y_label: "Count",
+    categories: ["Lunch", "Dinner"],
+    series: [{ values: [68, 176] }],
+  };
+  await page.selectOption("select >> nth=1", "update_chart");
+  await page.fill("textarea", JSON.stringify({ viewId, chart: byTime }));
+  await page.click("button[type=submit]");
+  await page.evaluate(() => (window.focusedBeforeUpdate = document.activeElement));
+  await page.getByText("📤 Tool Result").nth(1).waitFor();
+  const outside = await shown();
+  const focusKept = await page.evaluate(() => document.activeElement === window.focusedBeforeUpdate);
+  check(
+    "update_chart through the host adds no view: the chart changes in its own",
+    (await chartViews()) === 1 && outside.svgs === 1 && outside.figures === 1 && /Dinner/.test(outside.maidr) && !/Thur/.test(outside.maidr),
+    { views: await chartViews(), svgs: outside.svgs, figures: outside.figures },
+  );
+  await page.getByText("📤 Tool Result").nth(1).click(); // into the host page, still outside the chart
+  const resultText = await page.evaluate(() => document.body.textContent);
+  check(
+    "  the reader outside the chart keeps their focus, and the chart's status says it changed",
+    focusKept && !outside.hasFocus && /"readerInChart": false/.test(resultText) && outside.status === "Chart updated: Tips by Time",
+    { focusKept, viewHasFocus: outside.hasFocus, status: outside.status },
+  );
+  const second = await onlyChart();
+  check(
+    "  maidr lists the new chart alone",
+    second.count === 1 && second.chartId !== firstChartId && second.layer?.type === "bar" && second.layer?.pointCount === 2,
+    second,
+  );
+
+  for (let i = 0; i < 30; i++) {
+    await page.keyboard.press("Tab");
+    if (await view.evaluate(() => document.hasFocus() && document.activeElement !== document.body).catch(() => false)) break;
+  }
+  await sleep(600);
+  await page.keyboard.press("ArrowRight");
+  await sleep(900);
+  const inNew = await announced();
+  check("the reader Tabs into the new chart and its arrow keys announce its bars", /Lunch|Dinner/.test(inNew) && !/Sat|Sun|Thur|Fri/.test(inNew), inNew);
+
+  // Then the model updates the chart while the reader is in it: they stay in it.
+  const byHour = {
+    type: "line",
+    title: "Tips by Hour",
+    x_label: "Hour",
+    y_label: "Count",
+    x: ["Noon", "Evening", "Night"],
+    series: [{ values: [25, 60, 15] }],
+  };
+  const updated = await callTool("update_chart", { viewId, chart: byHour });
+  const inside = await shown();
+  check(
+    "update_chart while the reader is in the chart keeps them in it, on the new chart",
+    updated?.readerInChart === true && inside.hasFocus && inside.onChart && inside.svgs === 1 && inside.figures === 1 && /Evening/.test(inside.maidr),
+    { readerInChart: updated?.readerInChart, layers: updated?.layers, ...inside, maidr: undefined },
+  );
+  check("  and tells them it changed", inside.status === "Chart updated: Tips by Hour", inside.status);
+  const third = await onlyChart();
+  check(
+    "  in the same view, which maidr lists alone",
+    (await chartViews()) === 1 && third.count === 1 && third.chartId !== second.chartId && third.layer?.type === "line" && third.layer?.pointCount === 3,
+    third,
+  );
+  await page.keyboard.press("ArrowRight");
+  await sleep(900);
+  const onLine = await announced();
+  check("  and the arrow keys move through it", /Noon|Evening|Night/.test(onLine) && !/Lunch|Dinner/.test(onLine), onLine);
+  await sleep(600);
+  // The panel opened above stays open, so it is read without taking the reader out of the chart.
+  const contextAfter = await page.evaluate(
+    () => [...document.querySelectorAll("div")].map((d) => d.textContent).find((t) => t.startsWith("📋 Model Context")) ?? "",
+  );
+  check("  and the model context follows them there", /Noon|Evening|Night/.test(contextAfter) && !/Fri/.test(contextAfter), contextAfter);
+
+  // A view that misses an update catches up on its next poll, which the server answers at once,
+  // long before its wait is up: the view must not take that answer for a cut. The host holds the
+  // view's next poll back until update_chart has given up on the view.
+  let releasePoll;
+  const pollReleased = new Promise((resolve) => (releasePoll = resolve));
+  let pollHeld = false;
+  await context.route(SERVER_URL, async (route) => {
+    if (pollHeld || !pollArguments(route.request())) return route.fallback();
+    pollHeld = true;
+    await pollReleased;
+    await route.fallback();
+  });
+  await callTool("maidr_list_charts", { viewId }); // answers the poll in flight; the next is held
+  for (let i = 0; i < 50 && !pollHeld; i++) await sleep(100);
+  const missed = await callToolResult("update_chart", { viewId, chart });
+  const missedText = missed?.content?.[0]?.text ?? "";
+  const heldAt = waits.length;
+  releasePoll();
+  let caught;
+  for (let i = 0; i < 50; i++) {
+    caught = await shown();
+    if (waits.length > heldAt && caught.status === "Chart updated: The Number of Tips by Day") break;
+    await sleep(200);
+  }
+  await context.unroute(SERVER_URL);
+  check(
+    "a view that missed an update catches up on its next poll",
+    pollHeld && missed?.isError && /keeps the new chart/.test(missedText) && caught.status === "Chart updated: The Number of Tips by Day" && caught.svgs === 1 && /Thur/.test(caught.maidr),
+    { pollHeld, missed: missedText, status: caught.status, svgs: caught.svgs },
+  );
+  check("  and a reader in the chart stays in it", caught.hasFocus && caught.onChart, { hasFocus: caught.hasFocus, onChart: caught.onChart });
+  check(
+    "  and it keeps to long polls, now on the server's revision",
+    waits.length > heldAt && waits.slice(heldAt).every((w) => w === 20) && revisions.at(-1) === 3,
+    { waits: waits.slice(heldAt), revisions: revisions.slice(heldAt) },
+  );
+
   check("the reference host holds long polls, and the view keeps to them", waits.length > 0 && waits.every((w) => w === 20), waits);
   check("no console errors or CSP reports", problems.length === 0, problems);
   await context.close();
@@ -207,6 +362,16 @@ try {
   const cutTop = (cutData.content?.points ?? []).reduce((a, b) => (!a || b.point.y > a.point.y ? b : a), undefined);
   const cutAway = await callTool("maidr_navigate", { viewId: cut.viewId, layerId: cutLayer?.layerId, ...cutTop?.target });
   check("  and a move is kept for the reader", cutAway.ok && cutAway.applied === "on-next-focus", cutAway.applied ?? cutAway.error);
+
+  const updateAsked = Date.now();
+  const cutUpdated = await callTool("update_chart", { viewId: cut.viewId, chart: byTime });
+  const cutStatus = await cut.view.evaluate(() => document.getElementById("status").textContent);
+  const carried = polls.filter((p) => p.carried);
+  check(
+    "  a short poll carries update_chart, and the chart changes inside the reply window",
+    cutUpdated?.readerInChart === false && cutStatus === "Chart updated: Tips by Time" && carried.at(-1)?.wait === 0,
+    { ms: Date.now() - updateAsked, readerInChart: cutUpdated?.readerInChart, status: cutStatus, wait: carried.at(-1)?.wait },
+  );
 
   const short = polls.filter((p) => p.wait === 0);
   const gaps = short.slice(1).map((p, i) => p.at - short[i].at);

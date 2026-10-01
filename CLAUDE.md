@@ -28,7 +28,7 @@ e2e/              # Playwright driver against ext-apps' basic-host
 ## Principles
 
 1. **Accessibility is the product.** A change that shows the chart but drops an announcement, a braille update or a keyboard path is broken. `e2e/run.sh` is the check that says so.
-2. **maidr owns the chart.** The relay runs maidr's own WebMCP tools and returns their answers unchanged. It never reimplements them, and its model-facing tools keep maidr's names and arguments. Never move the reader's focus; maidr decides when a move is announced.
+2. **maidr owns the chart.** The relay runs maidr's own WebMCP tools and returns their answers unchanged. It never reimplements them, and its model-facing tools keep maidr's names and arguments. Never move the reader's focus; maidr decides when a move is announced. The one exception is `update_chart`: a reader who was in the chart it replaces is put back in, on the new chart, since the old one took their focus with it.
 3. **A `viewId` is the only key to a chart.** Nothing falls back to "the open chart": on a shared server that could be another reader's.
 4. **What the model sees stays small.** The SVG travels in the result's `_meta`, for the view. `content` and `structuredContent` carry the `viewId` and a summary.
 5. **Pin what the view loads.** maidr.js and the MCP Apps SDK come from jsDelivr at fixed versions (`server.py`). Raise them deliberately, and run `e2e/run.sh` when you do.
