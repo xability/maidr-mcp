@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q
+
+  e2e:
+    # The whole loop in ext-apps' reference host: the chart shows, the model's calls are
+    # answered by maidr inside it, the reader hears the moves, and the host gets the position.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Playwright's Chromium
+        working-directory: e2e
+        run: npm install --no-audit --no-fund && npx playwright-core install --with-deps chromium
+      - run: bash e2e/run.sh
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t maidr-mcp .
+      - name: The image serves the tools
+        run: |
+          docker run -d --name maidr -p 8000:8000 maidr-mcp
+          for _ in $(seq 30); do
+            curl -s -o /dev/null --max-time 2 -X OPTIONS http://localhost:8000/mcp && break
+            sleep 1
+          done
+          curl -sS -X POST http://localhost:8000/mcp \
+            -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"show_chart","arguments":{"chart":{"type":"bar","categories":["a","b"],"series":[{"values":[1,2]}]}}}}' \
+            | tee /dev/stderr | grep -q '"viewId"'
+          docker logs maidr
