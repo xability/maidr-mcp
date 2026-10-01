@@ -60,7 +60,11 @@ jobs:
       # The toolchain of ci.yml's e2e job, ready before Claude starts so the
       # review can run the checks instead of saying it could not. The installs
       # can fail on the PR's own changes, which is for the review to report, so
-      # they do not stop the job.
+      # they do not stop the job. They can also hang: on the pull request that
+      # added this file, the runner's apt mirror stopped answering and
+      # `--with-deps` waited on it until the run was cancelled eleven minutes
+      # later. The step timeouts turn that into a failed install the review is
+      # told about.
       - name: Install uv and set the python version
         uses: astral-sh/setup-uv@v5
         with:
@@ -74,11 +78,13 @@ jobs:
       - name: Install the project
         id: deps
         continue-on-error: true
+        timeout-minutes: 10
         run: uv sync --locked
 
       - name: Install Playwright's Chromium
         id: browser
         continue-on-error: true
+        timeout-minutes: 10
         working-directory: e2e
         run: |
           # Pin where the browsers go, so this install and Claude's own
