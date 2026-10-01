@@ -1,6 +1,8 @@
 // End-to-end check in ext-apps' reference host (basic-host): the chart is shown
 // through the host, a "model" calls the server's maidr_* tools over HTTP, and a
-// reader enters the chart and moves with the arrow keys. Exits non-zero on failure.
+// reader enters the chart and moves with the arrow keys. Then update_chart changes
+// the chart in its own view, with the reader outside it and inside it. Exits
+// non-zero on failure.
 //
 //   HOST_URL     the reference host        (default http://localhost:8080)
 //   SERVER_URL   maidr-mcp's MCP endpoint  (default http://localhost:3001/mcp)
@@ -129,6 +131,113 @@ try {
   );
   // The last move was the model's, to Fri: the context follows the reader there, not only their keys.
   check("the host's model context follows the reader, the model's moves included", /Fri/.test(context_) && /19/.test(context_), context_);
+
+  // update_chart replaces the chart in the view show_chart mounted. The host mounts a view for
+  // every call to a tool with a UI, so this first update goes through the host, which also
+  // leaves the reader in the host page, outside the chart.
+  const chartViews = async () => {
+    let n = 0;
+    for (const frame of page.frames()) {
+      if (await frame.evaluate(() => !!document.getElementById("chart")).catch(() => false)) n++;
+    }
+    return n;
+  };
+  const shown = () =>
+    view.evaluate(() => {
+      const svgs = document.querySelectorAll("svg[maidr]");
+      const focused = document.activeElement;
+      return {
+        svgs: svgs.length,
+        figures: document.querySelectorAll("figure").length,
+        maidr: svgs[0]?.getAttribute("maidr") ?? "",
+        status: document.getElementById("status").textContent,
+        hasFocus: document.hasFocus(),
+        onChart: !!focused?.matches('[tabindex="0"]') && !!svgs[0] && focused.contains(svgs[0]),
+      };
+    });
+  const onlyChart = async () => {
+    const listed_ = await callTool("maidr_list_charts", { viewId });
+    const charts = listed_.content?.charts ?? [];
+    return { count: charts.length, chartId: charts[0]?.chartId, layer: charts[0]?.layers?.[0] };
+  };
+  const firstChartId = listed.content.charts[0].chartId;
+  const byTime = {
+    type: "bar",
+    title: "Tips by Time",
+    x_label: "Time",
+    y_label: "Count",
+    categories: ["Lunch", "Dinner"],
+    series: [{ values: [68, 176] }],
+  };
+  await page.selectOption("select >> nth=1", "update_chart");
+  await page.fill("textarea", JSON.stringify({ viewId, chart: byTime }));
+  await page.click("button[type=submit]");
+  await page.evaluate(() => (window.focusedBeforeUpdate = document.activeElement));
+  await page.getByText("📤 Tool Result").nth(1).waitFor();
+  const outside = await shown();
+  const focusKept = await page.evaluate(() => document.activeElement === window.focusedBeforeUpdate);
+  check(
+    "update_chart through the host adds no view: the chart changes in its own",
+    (await chartViews()) === 1 && outside.svgs === 1 && outside.figures === 1 && /Dinner/.test(outside.maidr) && !/Thur/.test(outside.maidr),
+    { views: await chartViews(), svgs: outside.svgs, figures: outside.figures },
+  );
+  await page.getByText("📤 Tool Result").nth(1).click(); // into the host page, still outside the chart
+  const resultText = await page.evaluate(() => document.body.textContent);
+  check(
+    "  the reader outside the chart keeps their focus, and the chart's status says it changed",
+    focusKept && !outside.hasFocus && /"readerInChart": false/.test(resultText) && outside.status === "Chart updated: Tips by Time",
+    { focusKept, viewHasFocus: outside.hasFocus, status: outside.status },
+  );
+  const second = await onlyChart();
+  check(
+    "  maidr lists the new chart alone",
+    second.count === 1 && second.chartId !== firstChartId && second.layer?.type === "bar" && second.layer?.pointCount === 2,
+    second,
+  );
+
+  for (let i = 0; i < 30; i++) {
+    await page.keyboard.press("Tab");
+    if (await view.evaluate(() => document.hasFocus() && document.activeElement !== document.body).catch(() => false)) break;
+  }
+  await sleep(600);
+  await page.keyboard.press("ArrowRight");
+  await sleep(900);
+  const inNew = await announced();
+  check("the reader Tabs into the new chart and its arrow keys announce its bars", /Lunch|Dinner/.test(inNew) && !/Sat|Sun|Thur|Fri/.test(inNew), inNew);
+
+  // Then the model updates the chart while the reader is in it: they stay in it.
+  const byHour = {
+    type: "line",
+    title: "Tips by Hour",
+    x_label: "Hour",
+    y_label: "Count",
+    x: ["Noon", "Evening", "Night"],
+    series: [{ values: [25, 60, 15] }],
+  };
+  const updated = await callTool("update_chart", { viewId, chart: byHour });
+  const inside = await shown();
+  check(
+    "update_chart while the reader is in the chart keeps them in it, on the new chart",
+    updated?.readerInChart === true && inside.hasFocus && inside.onChart && inside.svgs === 1 && inside.figures === 1 && /Evening/.test(inside.maidr),
+    { readerInChart: updated?.readerInChart, layers: updated?.layers, ...inside, maidr: undefined },
+  );
+  check("  and tells them it changed", inside.status === "Chart updated: Tips by Hour", inside.status);
+  const third = await onlyChart();
+  check(
+    "  in the same view, which maidr lists alone",
+    (await chartViews()) === 1 && third.count === 1 && third.chartId !== second.chartId && third.layer?.type === "line" && third.layer?.pointCount === 3,
+    third,
+  );
+  await page.keyboard.press("ArrowRight");
+  await sleep(900);
+  const onLine = await announced();
+  check("  and the arrow keys move through it", /Noon|Evening|Night/.test(onLine) && !/Lunch|Dinner/.test(onLine), onLine);
+  await sleep(600);
+  // The panel opened above stays open, so it is read without taking the reader out of the chart.
+  const contextAfter = await page.evaluate(
+    () => [...document.querySelectorAll("div")].map((d) => d.textContent).find((t) => t.startsWith("📋 Model Context")) ?? "",
+  );
+  check("  and the model context follows them there", /Noon|Evening|Night/.test(contextAfter) && !/Fri/.test(contextAfter), contextAfter);
 
   check("no console errors or CSP reports", problems.length === 0, problems);
 } finally {
