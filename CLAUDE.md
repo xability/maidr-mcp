@@ -20,7 +20,8 @@ src/maidr_mcp/
 ├─ relay.py      # per-view queues: model call -> view poll -> view reply
 ├─ server.py     # MCPServer + Apps extension: tools, the view resource
 ├─ view.html     # the MCP App view: maidr.js, document.modelContext, relay loop
-└─ __main__.py   # CLI: Streamable HTTP (stateless, CORS) or stdio
+├─ access.py     # the optional access token: header or /mcp/<token>, kept out of logs
+└─ __main__.py   # CLI: Streamable HTTP (stateless, CORS, optional token) or stdio
 tests/            # pytest, in-process through mcp.Client
 e2e/              # Playwright driver against ext-apps' basic-host
 ```

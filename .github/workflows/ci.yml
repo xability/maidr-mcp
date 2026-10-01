@@ -58,3 +58,24 @@ jobs:
             -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"show_chart","arguments":{"chart":{"type":"bar","categories":["a","b"],"series":[{"values":[1,2]}]}}}}' \
             | tee /dev/stderr | grep -q '"viewId"'
           docker logs maidr
+      - name: The image takes an access token from the environment, and keeps it out of its log
+        run: |
+          token=ci-access-token-0123456789
+          docker run -d --name locked -p 8001:8000 -e MAIDR_MCP_TOKEN="$token" maidr-mcp
+          for _ in $(seq 30); do
+            curl -s -o /dev/null --max-time 2 -X OPTIONS http://localhost:8001/mcp && break
+            sleep 1
+          done
+          call='{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+          without=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8001/mcp \
+            -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+            -d "$call")
+          test "$without" = 401
+          curl -sS -o tools.out -X POST "http://localhost:8001/mcp/$token" \
+            -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+            -d "$call"
+          grep -q '"show_chart"' tools.out
+          docker logs locked > locked.log 2>&1
+          cat locked.log
+          grep -q '/mcp/<redacted>' locked.log
+          if grep -q "$token" locked.log; then echo "the token is in the log"; exit 1; fi
