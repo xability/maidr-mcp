@@ -255,6 +255,7 @@ def build_server(relay: Relay | None = None) -> MCPServer:
                 )
             return _failed(error)
         in_chart = answer.get("readerInChart") is True
+        dropped = answer.get("dropped") is True
         reader = (
             "The reader was in the chart: they are still in it, on the new chart, and were told "
             "it changed."
@@ -267,12 +268,19 @@ def build_server(relay: Relay | None = None) -> MCPServer:
             f"maidr reads it as {_layers(rendered)}. {reader} Its layer ids are new: call "
             "maidr_list_charts before maidr_get_layer_data or maidr_navigate."
         )
+        if dropped:
+            text += (
+                " A move or commands you had left waiting for the reader in the old chart were "
+                "dropped with it, and the chart says so: if you told them they would happen when "
+                "they Tab in, tell them they will not."
+            )
         return CallToolResult(
             content=[TextContent(type="text", text=text)],
             structured_content={
                 "viewId": viewId,
                 "layers": rendered.layers,
                 "readerInChart": in_chart,
+                "droppedWaiting": dropped,
             },
         )
 

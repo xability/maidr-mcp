@@ -476,15 +476,16 @@ try {
   const resultText = await page.evaluate(() => document.body.textContent);
   check(
     "  the reader outside the chart keeps their focus, and the chart's status says it changed",
-    focusKept && !outside.hasFocus && /"readerInChart": false/.test(resultText) && outside.status === "Chart updated: Tips by Time",
+    focusKept && !outside.hasFocus && /"readerInChart": false/.test(resultText) && /"droppedWaiting": true/.test(resultText) &&
+      outside.status === "Chart updated: Tips by Time. What the assistant had waiting for you went with the old chart.",
     { focusKept, viewHasFocus: outside.hasFocus, status: outside.status },
   );
   await sleep(1_000); // past the status line's refresh after the update
   const dropped = await callTool("maidr_list_commands", { viewId });
   const afterDrop = await notice();
   check(
-    "  and what waited in the old chart goes with it: maidr counts no command, and the status line names nothing",
-    keptBefore && dropped.ok && dropped.pending === 0 && afterDrop === "Chart updated: Tips by Time",
+    "  and what waited in the old chart goes with it: maidr counts no command, and the status line says it went",
+    keptBefore && dropped.ok && dropped.pending === 0 && afterDrop === "Chart updated: Tips by Time. What the assistant had waiting for you went with the old chart.",
     { keptBefore, pending: dropped.pending, status: afterDrop },
   );
   const second = await onlyChart();
@@ -502,7 +503,7 @@ try {
   check(
     "a move the model makes in the new chart while the reader is outside joins the change in the status line",
     keptNew.applied === "on-next-focus" &&
-      (await noticeComes(/^Chart updated: Tips by Time\. The assistant has a move waiting for you: Tab into the chart to hear it\.$/)),
+      (await noticeComes(/^Chart updated: Tips by Time\. What the assistant had waiting for you went with the old chart\. The assistant has a move waiting for you: Tab into the chart to hear it\.$/)),
     { applied: keptNew.applied ?? keptNew.error, status: await notice() },
   );
 
@@ -697,7 +698,8 @@ try {
   const carried = polls.filter((p) => p.carried);
   check(
     "  a short poll carries update_chart, and the chart changes inside the reply window",
-    cutUpdated?.readerInChart === false && cutStatus === "Chart updated: Tips by Time" && carried.at(-1)?.wait === 0,
+    cutUpdated?.readerInChart === false && cutUpdated?.droppedWaiting === true &&
+      cutStatus === "Chart updated: Tips by Time. What the assistant had waiting for you went with the old chart." && carried.at(-1)?.wait === 0,
     { ms: Date.now() - updateAsked, readerInChart: cutUpdated?.readerInChart, status: cutStatus, wait: carried.at(-1)?.wait },
   );
 

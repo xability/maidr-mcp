@@ -313,9 +313,11 @@ async def test_update_chart_replaces_the_chart_in_the_open_view():
         "viewId": view_id,
         "layers": [{"type": "line", "points": 3}],
         "readerInChart": True,
+        "droppedWaiting": False,
     }
     text = updated.content[0].text
     assert view_id in text and "line (3 points)" in text and "still in it" in text
+    assert "dropped" not in text
     assert updated.meta is None or SVG_META_KEY not in updated.meta  # the model gets no SVG
 
 
@@ -334,13 +336,17 @@ async def test_update_chart_takes_every_chart_type_show_chart_does():
                 {
                     "viewId": view_id,
                     "callId": call["callId"],
-                    "result": {"ok": True, "readerInChart": False},
+                    "result": {"ok": True, "readerInChart": False, "dropped": True},
                 },
             )
 
         async with anyio.create_task_group() as tg:
             tg.start_soon(view)
             updated = await client.call_tool("update_chart", {"viewId": view_id, "chart": pie})
+    # What waited for the reader in the old chart went with it: the model must take back
+    # anything it promised them.
+    assert updated.structured_content["droppedWaiting"] is True
+    assert "tell them they will not" in updated.content[0].text
     show, update = tools["show_chart"].input_schema, tools["update_chart"].input_schema
     assert update["properties"]["chart"] == show["properties"]["chart"]
     assert update.get("$defs") == show.get("$defs")

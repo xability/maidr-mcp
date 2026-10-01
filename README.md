@@ -23,7 +23,7 @@ The model calls `show_chart` with the data, and the chart appears in the convers
 
    If hosts adopt WebMCP for MCP Apps, as [ext-apps#798](https://github.com/modelcontextprotocol/ext-apps/pull/798) proposes, maidr's tools reach the model directly and the relay can go.
 4. On each key the reader presses in the chart, the view sends their position with `ui/update-model-context`.
-5. `update_chart` draws a new chart for a `viewId` and relays it to that view, which swaps it in place: maidr lets go of the old chart, with any move or command still waiting for the reader in it, and binds the new one. The server keeps the latest chart, so a view that missed the swap, out of view or mounted again by the host, catches up on its next poll.
+5. `update_chart` draws a new chart for a `viewId` and relays it to that view, which swaps it in place: maidr lets go of the old chart, with any move or command still waiting for the reader in it, and binds the new one. When something was waiting, the chart's status line says it went, and `update_chart` tells the model so it can take back what it promised the reader. The server keeps the latest chart, so a view that missed the swap, out of view or mounted again by the host, catches up on its next poll.
 6. maidr never moves the reader's focus. A move or command the model makes while the reader is outside the chart waits for them, and until they enter the chart, the view's status line says so: "The assistant has a move waiting for you: Tab into the chart to hear it." After `update_chart` the same line says "Chart updated: <title>", until the reader enters the chart; when a move or command waits as well, it says both.
 
 ## Tools
@@ -144,7 +144,7 @@ It checks:
 - a move and a command made while the reader is in the chat wait, the chart's status line says so, and when the reader Tabs in, the move is announced, the command takes effect, and the notice goes;
 - the arrow keys announce, and the reader's position reaches the host as model context;
 - a move and commands made while the reader is in the chart take effect at once, and `maidr_list_charts` gives the model the position a command took the reader to;
-- `update_chart` changes the chart in its own view, with no view added: a reader outside it keeps their focus, a reader in it stays in it, both are told, and maidr reads only the new chart; what waited for the reader in the old chart goes with it, and a move waiting in the new one joins the change in the status line;
+- `update_chart` changes the chart in its own view, with no view added: a reader outside it keeps their focus, a reader in it stays in it, both are told, and maidr reads only the new chart; what waited for the reader in the old chart goes with it, and both the model and the status line say so, and a move waiting in the new one joins the change in the status line;
 - a view that missed an update catches up on its next poll, and keeps to long polls;
 - there are no console errors or CSP violations;
 - a step, violin, pie and candlestick chart and a scatter with a trend line each appear: maidr reads each as the layers in the [table above](#tools), ArrowRight announces its first point, and a move the model asks for is announced, or refused by maidr where the table says so;

@@ -129,6 +129,9 @@ async function update(brought) {
   const inChart = readerInChart();
   if (latest === revision) return { ok: true, readerInChart: inChart }; // an earlier call brought it
 
+  // What the model left waiting for the reader in the old chart goes with it. Both hear so: the
+  // reader may have been told it would happen when they Tab in.
+  const dropped = moveWaiting || (await commandsWaiting()) > 0;
   const hadTools = tools.has("maidr_list_charts");
   const old = chart.querySelector("svg[maidr]");
   if (old) document.dispatchEvent(new CustomEvent("maidr:unbindchart", { detail: old }));
@@ -138,6 +141,7 @@ async function update(brought) {
   // maidr kept the waiting move and commands on the old chart, and unmounting it dropped them.
   moveWaiting = false;
   waiting = "";
+  showStatus();
   void app
     .updateModelContext({
       content: [{ type: "text", text: `maidr chart ${viewId} now shows the chart update_chart drew; the reader is on none of its points yet.` }],
@@ -161,9 +165,10 @@ async function update(brought) {
   // After the focus, whose focusin clears the status line for a reader entering the chart.
   const title = data.title ?? data.subplots?.[0]?.[0]?.layers?.[0]?.title;
   updated = typeof title === "string" && title ? `Chart updated: ${title}` : "Chart updated.";
+  if (dropped) updated = `${updated.replace(/\.?$/, ".")} What the assistant had waiting for you went with the old chart.`;
   showStatus();
   refreshNotice(); // a catch-up has no batch after it to refresh the notice
-  return { ok: true, readerInChart: inChart };
+  return { ok: true, readerInChart: inChart, dropped };
 }
 
 // The element the reader Tabs to, once maidr has bound the new plot and, while its agent tools
@@ -367,6 +372,9 @@ document.addEventListener(
   async (event) => {
     refreshNotice();
     if (!ready || !chart.contains(event.target)) return;
+    // Only an entry from outside: focus moving within the chart (maidr's braille field, a
+    // dialog handing focus back) must not wipe what update_chart has just said.
+    if (chart.contains(event.relatedTarget)) return;
     // In the chart, maidr speaks for itself: the status line has said its piece. update_chart
     // putting a reader back in says the change once their focus is in.
     updated = "";
