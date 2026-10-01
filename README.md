@@ -35,18 +35,24 @@ The model calls `show_chart` with the data, and the chart appears in the convers
 | `maidr_navigate` | model | Moves the reader to a point and announces it. |
 | `maidr_view_poll`, `maidr_view_reply`, `maidr_view_svg` | the chart view only | Carry the relay, and the SVG for `update_chart` and for hosts that drop `_meta`. |
 
-`show_chart` and `update_chart` take one of these chart types. Each maps onto the maidr layer type shown:
+`show_chart` and `update_chart` take one of these chart types, the ones py-maidr marks [stable](https://py.maidr.ai/stability.html). Each maps onto the maidr layer type shown:
 
-| `type` | Fields | maidr layer |
-| --- | --- | --- |
-| `bar` | `categories`, `series` (one series, or several side by side, or `stacked`) | `bar`, `dodged_bar`, `stacked_bar` |
-| `line` | `x` (numbers or labels), `series` | `line` |
-| `scatter` | `x`, `y` | `point` |
-| `histogram` | `values`, `bins` | `hist` |
-| `box` | `groups` | `box` |
-| `heatmap` | `x_labels`, `y_labels`, `values`, `z_label` | `heat` |
+| `type` | Fields | maidr layer | The model can move the reader there |
+| --- | --- | --- | --- |
+| `bar` | `categories`, `series` (one series, or several side by side, or `stacked`) | `bar`, `dodged_bar`, `stacked_bar` | yes |
+| `line` | `x` (numbers or labels), `series` | `line` | yes |
+| `step` | `x`, `series`, `where` (`post`, `pre` or `mid`) | `step` | yes |
+| `scatter` | `x`, `y`, and `trend` for a least-squares line | `point`, and `smooth` for the trend line | to the points, not the line |
+| `histogram` | `values`, `bins` | `hist` | yes |
+| `box` | `groups` | `box` | no |
+| `violin` | `groups` | `violin_box`, `violin_kde` | no |
+| `heatmap` | `x_labels`, `y_labels`, `values`, `z_label` | `heat` | yes |
+| `pie` | `categories`, `values` (read clockwise from 12 o'clock) | `pie` | no |
+| `candlestick` | `dates`, `open`, `high`, `low`, `close` | `candlestick` | no |
 
-Every type also takes `title`, `x_label` and `y_label`.
+Every type also takes `title`, `x_label` and `y_label`. A pie has no axes, so there they name what the slices are and what the values measure.
+
+The model reads every layer's points with `maidr_get_layer_data`. Where the last column says no, maidr gives the points no `target`: the reader moves through them with the keys, and `maidr_navigate` answers `layer not navigable`.
 
 ## Use it
 
@@ -137,6 +143,7 @@ It checks:
 - `update_chart` changes the chart in its own view, with no view added: a reader outside it keeps their focus, a reader in it stays in it, both are told, and maidr reads only the new chart;
 - a view that missed an update catches up on its next poll, and keeps to long polls;
 - there are no console errors or CSP violations;
+- a step, violin, pie and candlestick chart and a scatter with a trend line each appear: maidr reads each as the layers in the [table above](#tools), ArrowRight announces its first point, and a move the model asks for is announced, or refused by maidr where the table says so;
 - when the host cuts long polls, the view falls back to short polls, still answers the model, `update_chart` included, and stops polling when the chart is closed.
 
 ## Limits
@@ -146,7 +153,7 @@ It checks:
 - **Each `show_chart` call still adds a chart.** Claude mounts a new view for every call to a tool with a UI, and keeps the earlier ones. A chart that changes stays in its view only when the model calls `update_chart`, as the server's instructions ask; a second `show_chart` is a second view.
 - **The relay polls.** Each open chart makes a request every 20 seconds, or every 2 seconds on a host that cuts requests held open, where a model's call can also take up to 2 seconds longer to reach the chart. A host that also allows a view fewer than 30 calls a minute leaves some of the model's calls unanswered. Which hosts limit calls from a view is not yet known.
 - **Access is one shared token, and only if you set one.** Without a token, anyone with the server's URL can draw charts. Set `MAIDR_MCP_TOKEN` and every request needs it; Claude and ChatGPT carry it in the URL. That URL, kept in the host's connector settings, is then the secret; rotating it means restarting the server with a new token and updating each host. Full OAuth is not implemented. See [An access token](#an-access-token). A chart can only be read or driven with its `viewId`, a random 24-character token.
-- **Six chart families so far.** The server does not take plotting code.
+- **Ten chart families, and no plotting code.** The model sends data for one of the types [above](#tools), and the server draws it. It deliberately takes no plotting code: anyone with its URL could run code on it. py-maidr's experimental plot types are left out until they have been tried with readers.
 
 ## Network and data
 
