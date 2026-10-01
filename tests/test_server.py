@@ -145,6 +145,36 @@ async def test_update_chart_replaces_the_chart_in_the_open_view():
     assert updated.meta is None or SVG_META_KEY not in updated.meta  # the model gets no SVG
 
 
+async def test_update_chart_takes_every_chart_type_show_chart_does():
+    pie = {"type": "pie", "title": "Tips by day", "categories": ["Sat", "Sun"], "values": [87, 76]}
+    async with Client(build_server()) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+        shown = await client.call_tool("show_chart", {"chart": BAR})
+        view_id = shown.structured_content["viewId"]
+
+        async def view():
+            polled = await client.call_tool("maidr_view_poll", {"viewId": view_id, "revision": 0})
+            (call,) = polled.structured_content["calls"]
+            await client.call_tool(
+                "maidr_view_reply",
+                {
+                    "viewId": view_id,
+                    "callId": call["callId"],
+                    "result": {"ok": True, "readerInChart": False},
+                },
+            )
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(view)
+            updated = await client.call_tool("update_chart", {"viewId": view_id, "chart": pie})
+    show, update = tools["show_chart"].input_schema, tools["update_chart"].input_schema
+    assert update["properties"]["chart"] == show["properties"]["chart"]
+    assert update.get("$defs") == show.get("$defs")
+    assert not updated.is_error
+    assert updated.structured_content["layers"] == [{"type": "pie", "points": 2}]
+    assert 'pie chart "Tips by day"' in updated.content[0].text
+
+
 async def test_update_chart_on_an_unknown_view_tells_the_model_to_show_it():
     async with Client(build_server()) as client:
         result = await client.call_tool("update_chart", {"viewId": "nope", "chart": LINE})
