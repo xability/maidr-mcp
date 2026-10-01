@@ -86,7 +86,10 @@ def build_server(relay: Relay | None = None) -> MCPServer:
         rendered = await anyio.to_thread.run_sync(render, chart)
         view_id = relay.open(svg=rendered.svg)
         layers = ", ".join(
-            f"{layer['type']} ({layer['points']} points)" for layer in rendered.layers
+            layer["type"]
+            if layer["points"] is None
+            else f"{layer['type']} ({layer['points']} points)"
+            for layer in rendered.layers
         )
         title = f' "{chart.title}"' if chart.title else ""
         text = (

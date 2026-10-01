@@ -91,5 +91,13 @@ async def test_a_model_call_is_relayed_to_the_view_and_answered():
         assert svg.structured_content["svg"].startswith("<svg")
 
 
+async def test_a_layer_without_a_point_count_is_named_without_one():
+    heatmap = {"type": "heatmap", "x_labels": ["a"], "y_labels": ["r"], "values": [[1]]}
+    async with Client(build_server()) as client:
+        result = await client.call_tool("show_chart", {"chart": heatmap})
+    assert "maidr reads it as heat." in result.content[0].text
+    assert "None" not in result.content[0].text
+
+
 def test_only_the_arguments_given_are_passed_on():
     assert _given({"layerId": "L", "chartId": None, "row": 0}) == {"layerId": "L", "row": 0}
