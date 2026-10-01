@@ -1,0 +1,9 @@
+{
+  "name": "maidr-mcp-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Drives maidr-mcp's chart in ext-apps' reference host",
+  "dependencies": {
+    "playwright-core": "1.56.1"
+  }
+}
