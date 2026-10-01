@@ -3,7 +3,7 @@
 import anyio
 import pytest
 
-from maidr_mcp.relay import Relay
+from maidr_mcp.relay import UNKNOWN_VIEW, UPDATE, Relay
 
 pytestmark = pytest.mark.anyio
 
@@ -72,6 +72,52 @@ async def test_a_poll_with_nothing_to_do_returns_empty():
     assert await relay.poll(relay.open()) == []
 
 
+async def test_a_short_poll_answers_at_once():
+    relay = Relay()  # a long poll would wait 20 seconds
+    view_id = relay.open()
+    with anyio.fail_after(1):
+        assert await relay.poll(view_id, wait=0) == []
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(relay.call, view_id, "maidr_list_charts", {})
+        await anyio.sleep(0.01)
+        with anyio.fail_after(1):
+            calls = await relay.poll(view_id, wait=0)
+        assert [c.tool for c in calls] == ["maidr_list_charts"]
+        relay.reply(view_id, calls[0].call_id, {"ok": True})
+
+
+async def test_a_poll_waits_no_longer_than_the_relay_allows():
+    relay = Relay(poll_seconds=0.05)
+    view_id = relay.open()
+    with anyio.fail_after(1):
+        assert await relay.poll(view_id, wait=20) == []
+        assert await relay.poll(view_id, wait=-1) == []  # taken as 0
+
+
+async def test_a_poll_the_host_cut_short_leaves_later_calls_to_the_view():
+    # The host gave up on the view's long poll, but the server's is still waiting. The view
+    # polls again, short; a call that comes after must go to the view, not the abandoned poll.
+    relay = Relay()
+    view_id = relay.open()
+    abandoned, result = [], {}
+
+    async def abandoned_poll():
+        abandoned.extend(await relay.poll(view_id, wait=0.2))
+
+    async def model():
+        result.update(await relay.call(view_id, "maidr_list_charts", {}))
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(abandoned_poll)
+        await anyio.sleep(0.01)
+        assert await relay.poll(view_id, wait=0) == []
+        tg.start_soon(model)
+        await anyio.sleep(0.3)  # the abandoned poll runs out, and must take nothing
+        assert abandoned == []
+        await answer(relay, view_id, {"ok": True})  # the view's next poll
+    assert result["ok"] is True
+
+
 async def test_a_view_outliving_a_restart_is_taken_back():
     relay = Relay()
     async with anyio.create_task_group() as tg:
@@ -108,3 +154,83 @@ async def test_limits():
         await anyio.sleep(0.01)
         result = await relay.call(view_id, "maidr_list_charts", {})
     assert result == {"ok": False, "error": "too many calls are waiting for this chart"}
+
+
+async def test_an_update_replaces_the_chart_and_reaches_the_view():
+    relay = Relay()
+    view_id = relay.open(svg="<svg>old</svg>")
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(answer, relay, view_id, {"ok": True, "readerInChart": False})
+        result = await relay.update(view_id, "<svg>new</svg>")
+    assert result == {"ok": True, "readerInChart": False, "tool": UPDATE, "arguments": {}}
+    assert relay.svg(view_id) == "<svg>new</svg>"
+    assert relay.revision(view_id) == 1
+
+
+async def test_an_update_to_an_unknown_view_is_an_error_naming_show_chart():
+    relay = Relay()
+    result = await relay.update("nope", "<svg/>")
+    assert result == {"ok": False, "error": UNKNOWN_VIEW}
+    assert "show_chart" in UNKNOWN_VIEW
+    assert not relay.holds("nope")
+
+
+async def test_an_update_nobody_answers_is_kept_for_the_view_to_catch_up():
+    relay = Relay(reply_seconds=0.05)
+    view_id = relay.open(svg="<svg>old</svg>")
+    result = await relay.update(view_id, "<svg>new</svg>")
+    assert result["ok"] is False and "did not answer" in result["error"]
+    assert relay.svg(view_id) == "<svg>new</svg>"
+    # A view still showing revision 0 is answered at once, so that it fetches the new chart.
+    with anyio.fail_after(1):
+        assert await relay.poll(view_id, revision=0) == []
+    # One showing it waits for calls as usual.
+    with anyio.move_on_after(0.05) as waiting:
+        await relay.poll(view_id, revision=1)
+    assert waiting.cancelled_caught
+
+
+async def test_a_view_taken_back_after_a_restart_keeps_the_revision_it_shows():
+    relay = Relay(poll_seconds=0.01)
+    assert await relay.poll("from-before-the-restart", revision=2) == []
+    assert relay.revision("from-before-the-restart") == 2
+    assert relay.svg("from-before-the-restart") is None
+
+
+async def test_an_update_is_refused_without_replacing_when_the_queue_is_full():
+    relay = Relay(max_queue=1, reply_seconds=0.1)
+    view_id = relay.open(svg="<svg>old</svg>")
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(relay.call, view_id, "maidr_list_charts", {})
+        await anyio.sleep(0.01)
+        result = await relay.update(view_id, "<svg>new</svg>")
+    assert result == {"ok": False, "error": "too many calls are waiting for this chart"}
+    assert relay.svg(view_id) == "<svg>old</svg>"
+    assert relay.revision(view_id) == 0
+
+
+async def test_a_view_behind_is_answered_at_once_whatever_its_wait_and_its_poll_is_the_latest():
+    # update_chart's call went unanswered, so the server is on revision 1. A copy of the view
+    # still on revision 0, mounted again from show_chart's result, long-polls: it is answered at
+    # once, and its poll is the latest, so a call after it is not taken by the poll before.
+    relay = Relay(reply_seconds=0.5)
+    view_id = relay.open(svg="<svg>old</svg>")
+    await relay.update(view_id, "<svg>new</svg>")
+    earlier, result = [], {}
+
+    async def earlier_poll():
+        earlier.extend(await relay.poll(view_id, revision=1, wait=0.2))
+
+    async def model():
+        result.update(await relay.call(view_id, "maidr_list_charts", {}))
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(earlier_poll)
+        await anyio.sleep(0.01)
+        with anyio.fail_after(1):
+            assert await relay.poll(view_id, revision=0, wait=20) == []
+        tg.start_soon(model)
+        await anyio.sleep(0.25)  # the earlier poll runs out, and must take nothing
+        assert earlier == []
+        await answer(relay, view_id, {"ok": True})  # the view's next poll
+    assert result["ok"] is True

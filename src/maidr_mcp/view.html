@@ -8,7 +8,8 @@
   :root { color-scheme: light; }
   body { margin: 0; padding: 8px; background: #fff; color: #1a1a1a; font: 14px/1.4 system-ui, sans-serif; }
   #chart svg[maidr] { display: block; max-width: 100%; height: auto; }
-  #status:empty { display: none; }
+  /* Kept in the page when empty: a status region that appears with its text is not always read. */
+  #status:empty { margin: 0; }
 </style>
 </head>
 <body>
@@ -16,14 +17,18 @@
 <p id="status" role="status">Loading the chart…</p>
 <script type="module">
 // The chart view of maidr-mcp. It shows the SVG show_chart drew, loads maidr.js, and runs
-// the calls the server relays from the model on maidr's own WebMCP tools. It also tells the
-// model, through ui/update-model-context, where the reader is, for the model's next turn, and
-// tells the reader, in its status line, when a move or command of the model's waits for them.
+// the calls the server relays from the model on maidr's own WebMCP tools. It swaps in the
+// chart update_chart draws, in place. It also tells the model, through
+// ui/update-model-context, where the reader is, for the model's next turn, and tells the
+// reader, in its status line, when the chart changed and when a move or command of the
+// model's waits for them.
 import { App } from "{{EXT_APPS_JS}}";
 
 const MAIDR_JS = "{{MAIDR_JS}}";
+const UPDATE = "maidr_view_update"; // the server's call for update_chart, run here, not by maidr
 const chart = document.getElementById("chart");
 const status = document.getElementById("status");
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // maidr.js registers its tools (maidr_list_charts, maidr_get_layer_data, maidr_navigate,
 // maidr_list_commands, maidr_run_command) on document.modelContext. No host hands a view's
@@ -46,8 +51,10 @@ Object.defineProperty(document, "modelContext", {
 
 const app = new App({ name: "maidr chart", version: "1" });
 let viewId;
-let stopped = false;
 let ready = false; // maidr.js loaded: until then the status line says it is loading, or why not
+let revision = 0; // the server's revision of the chart shown; show_chart's is 0
+// Aborted when the host tears the view down: the relay stops, and a poll in flight is cancelled.
+const stop = new AbortController();
 
 app.addEventListener("toolresult", (result) => {
   if (viewId !== undefined || result.isError) return;
@@ -55,7 +62,7 @@ app.addEventListener("toolresult", (result) => {
   if (typeof viewId === "string") void show(result._meta?.["ai.maidr/svg"]);
 });
 app.onteardown = async () => {
-  stopped = true;
+  stop.abort();
   return {};
 };
 
@@ -64,6 +71,7 @@ async function show(svg) {
     // A host that drops the result's _meta: ask the server, which keeps the SVG a while.
     const fetched = await app.callServerTool({ name: "maidr_view_svg", arguments: { viewId } }).catch(() => null);
     svg = fetched?.structuredContent?.svg;
+    revision = fetched?.structuredContent?.revision ?? 0;
   }
   if (typeof svg !== "string") {
     status.textContent = "This chart is no longer available. Ask for it again.";
@@ -74,7 +82,7 @@ async function show(svg) {
   script.src = MAIDR_JS;
   script.onload = () => {
     ready = true;
-    status.textContent = "";
+    showStatus();
     void relay();
   };
   script.onerror = () => {
@@ -102,24 +110,151 @@ async function run(call) {
   }
 }
 
+// update_chart: replaces the chart with the one the server now holds for this view, in place.
+// maidr lets go of the old chart (maidr:unbindchart unmounts it and drops it from its tools)
+// and binds the new one as it enters the page. A reader who was in the chart is put back in
+// it, on the new chart, since the old one took their focus with it; anyone else keeps theirs.
+// Either way the status line says the chart changed. What waited for the reader in the old
+// chart, a move and commands, goes with it. The poll that finds the view behind brings the
+// chart, {svg, revision}; when one does not, the view fetches it.
+async function update(brought) {
+  const fetched =
+    brought ??
+    (await app.callServerTool({ name: "maidr_view_svg", arguments: { viewId } }).catch(() => null))?.structuredContent;
+  const svg = fetched?.svg;
+  const latest = fetched?.revision;
+  if (typeof svg !== "string" || typeof latest !== "number") {
+    return { ok: false, error: "the chart view could not fetch the new chart" };
+  }
+  const inChart = readerInChart();
+  if (latest === revision) return { ok: true, readerInChart: inChart }; // an earlier call brought it
+
+  const hadTools = tools.has("maidr_list_charts");
+  const old = chart.querySelector("svg[maidr]");
+  if (old) document.dispatchEvent(new CustomEvent("maidr:unbindchart", { detail: old }));
+  chart.innerHTML = svg;
+  revision = latest;
+  lastPosition = null; // it named a point of the old chart
+  // maidr kept the waiting move and commands on the old chart, and unmounting it dropped them.
+  moveWaiting = false;
+  waiting = "";
+  void app
+    .updateModelContext({
+      content: [{ type: "text", text: `maidr chart ${viewId} now shows the chart update_chart drew; the reader is on none of its points yet.` }],
+    })
+    .catch(() => {});
+
+  const plot = chart.querySelector("svg[maidr]");
+  let data = null;
+  try {
+    data = JSON.parse(plot?.getAttribute("maidr") ?? "null");
+  } catch {}
+  const target = data && (await bound(plot, data.id, hadTools));
+  if (!target) {
+    updated = "The chart changed, but maidr could not make the new one accessible.";
+    showStatus();
+    return { ok: false, error: "maidr did not take up the new chart" };
+  }
+  // Only into focus that went nowhere: a reader who has since moved on keeps their place.
+  const lost = document.activeElement === null || document.activeElement === document.body;
+  if (inChart && document.hasFocus() && lost) target.focus();
+  // After the focus, whose focusin clears the status line for a reader entering the chart.
+  const title = data.title ?? data.subplots?.[0]?.[0]?.layers?.[0]?.title;
+  updated = typeof title === "string" && title ? `Chart updated: ${title}` : "Chart updated.";
+  showStatus();
+  refreshNotice(); // a catch-up has no batch after it to refresh the notice
+  return { ok: true, readerInChart: inChart };
+}
+
+// The element the reader Tabs to, once maidr has bound the new plot and, while its agent tools
+// are on, lists that chart alone; null after five seconds.
+async function bound(plot, chartId, hadTools) {
+  for (let i = 0; i < 100; i++) {
+    const target = plot.closest('[tabindex="0"]');
+    if (target) {
+      if (!hadTools && !tools.has("maidr_list_charts")) return target;
+      const charts = (await run({ tool: "maidr_list_charts" }))?.content?.charts;
+      if (charts?.length === 1 && charts[0].chartId === chartId) return target;
+    }
+    await sleep(50);
+  }
+  return null;
+}
+
+// How the view fetches the model's calls. A long poll is held by the server until a call
+// comes or LONG_WAIT runs out, so a call reaches maidr at once and an idle chart makes one
+// request every 20 seconds. A host may cut a request held that long, or refuse it. When a long
+// poll fails, or comes back empty before its wait is up, the view switches to short polls,
+// which the server answers at once. It tries a long poll again after LONG_RETRY, and doubles
+// that each time a long poll fails, so on a host that cuts them it settles on short polls
+// rather than flipping back and forth.
+//
+// Every poll also says which revision of the chart the view shows. The server answers a view
+// that is behind at once, whatever its wait, with the chart it missed, so the view catches up
+// with update_chart without the answer being taken for a cut (see poll()).
+//
+// Short polls still answer the model within the server's reply window (reply_seconds, 10 s),
+// update_chart's call included. At worst a call reaches the server just after a short poll has
+// left it, and then takes
+//     3 s waiting for the next poll: SHORT_EVERY, 2 s, or a poll's round trip through the
+//     host when that is longer; say 3 s on a slow host
+//   + one round trip through the host: that poll's answer to the view, and the view's reply
+//     back to the server; 3 s
+//   + maidr running the call, or binding the chart update_chart drew, well under 1 s
+//   = under 7 s, 3 s inside the window.
+// update_chart takes no more round trips than maidr's calls: the poll that hands the view its
+// maidr_view_update brings the new chart too. Fetching it with maidr_view_svg instead would
+// add a round trip, and take a slow host to the edge of the window.
+// The interval does not grow while the chart is idle, since a call may come at any moment;
+// only failed polls back off, while calls cannot be answered anyway. Polls start at least
+// MIN_GAP apart, so a chart polls once a second at most, and 30 times a minute on short polls.
+//
+// Cut detection assumes the server holds a poll for its whole wait (Relay's poll_seconds, 20):
+// lowering poll_seconds below LONG_WAIT would make every long poll look cut.
+const LONG_WAIT = 20; // s: the longest the server holds a poll
+const SHORT_EVERY = 2_000; // ms between the starts of two short polls
+const MIN_GAP = 1_000; // ms between the starts of any two polls: one a second at most
+const MAX_BACKOFF = 30_000; // ms: the longest pause after short polls fail
+const LONG_RETRY = 60_000; // ms on short polls before a long poll is tried again
+const MAX_LONG_RETRY = 30 * 60_000;
+const CATCH_UP_RETRY = 5_000; // ms after a failed catch-up: the next poll would ask again at once
+
 async function relay() {
-  let backoff = 1000;
-  while (!stopped) {
-    let calls;
-    try {
-      const polled = await app.callServerTool(
-        { name: "maidr_view_poll", arguments: { viewId } },
-        { timeout: 45_000 },
-      );
-      calls = polled.structuredContent?.calls ?? [];
-      backoff = 1000;
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, backoff));
-      backoff = Math.min(backoff * 2, 30_000);
+  let wait = LONG_WAIT; // seconds the server may hold the next poll
+  let longRetry = LONG_RETRY; // what the view has learned of the host: grows with each cut
+  let longAgain = 0; // when to try a long poll again
+  let failures = 0; // short polls failed in a row
+  let lastPoll = -Infinity; // when the last poll started
+  while (!stop.signal.aborted) {
+    if (!wait && !failures && performance.now() >= longAgain) wait = LONG_WAIT;
+    await pause(lastPoll + (wait ? MIN_GAP : SHORT_EVERY) - performance.now());
+    if (stop.signal.aborted) break;
+    lastPoll = performance.now();
+    const polled = await poll(wait);
+    if (stop.signal.aborted) break;
+    if (!polled && wait) {
+      // The host does not hold a poll this long, or not now: poll short from here on.
+      wait = 0;
+      longAgain = performance.now() + longRetry;
+      longRetry = Math.min(longRetry * 2, MAX_LONG_RETRY);
       continue;
     }
+    if (!polled) {
+      // Short polls fail too: the host or the server is down. Back off.
+      failures += 1;
+      await pause(Math.min(SHORT_EVERY * 2 ** failures, MAX_BACKOFF));
+      continue;
+    }
+    failures = 0;
+    const { calls, latest, svg } = polled;
+    const brought = typeof svg === "string" ? { svg, revision: latest } : undefined;
+    // Behind the server with no update on its way: this view missed one, while out of view
+    // or because the host mounted it again from show_chart's result.
+    if (latest > revision && !calls.some((call) => call.tool === UPDATE)) {
+      if (!(await update(brought)).ok) await pause(CATCH_UP_RETRY);
+    }
     for (const call of calls) {
-      const result = await run(call);
+      const result = call.tool === UPDATE ? await update(brought) : await run(call);
       // maidr keeps one move, the latest: a move it made at once leaves none waiting, and one it
       // refused leaves the kept one as it was.
       if (call.tool === "maidr_navigate" && result?.ok === true) {
@@ -136,11 +271,65 @@ async function relay() {
   }
 }
 
-// maidr never moves the reader's focus, and neither does the view: a move or command the model
-// makes while the reader is outside the chart waits for them (maidr answers applied
-// "on-next-focus") and happens when they enter it. Until then the status line says so, where a
-// screen reader browsing the conversation finds it. maidr counts the waiting commands; it keeps
-// one waiting move, which it makes as soon as the reader enters the chart.
+// One poll: what the server hands over, {calls, latest, svg}, or null when the poll failed or
+// was cut. latest is the chart's revision on the server; a view behind it gets that chart's
+// svg as well. The server answers before a poll's wait is up only to hand over a call, or, at
+// once, to a view that is behind it. So an early answer is the server's when it carries a call
+// (update_chart's among them) or says the view is behind (the catch-up for an update the view
+// missed); an early empty answer that says neither was cut short on the way.
+async function poll(wait) {
+  const shown = revision; // what this poll tells the server the view shows
+  const started = performance.now();
+  try {
+    const polled = await app.callServerTool(
+      { name: "maidr_view_poll", arguments: { viewId, revision: shown, wait } },
+      { timeout: (wait + 25) * 1000, signal: stop.signal }, // the hold, and time for the host
+    );
+    const calls = polled.structuredContent?.calls;
+    if (polled.isError || !Array.isArray(calls)) return null;
+    const latest = polled.structuredContent?.revision ?? 0;
+    const early = performance.now() - started < (wait - 1) * 1000;
+    if (early && !calls.length && !(latest > shown)) return null;
+    return { calls, latest, svg: polled.structuredContent?.svg };
+  } catch {
+    return null;
+  }
+}
+
+// Resolves after ms, or at once when the view is torn down.
+function pause(ms) {
+  return new Promise((resolve) => {
+    if (stop.signal.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      stop.signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, Math.max(0, ms));
+    stop.signal.addEventListener("abort", done);
+  });
+}
+
+// The status line, once maidr.js is ready, says two things a screen reader browsing the
+// conversation should find there: that update_chart changed the chart, and what of the model's
+// waits for the reader. They are kept apart, so that refreshing the one never wipes the other
+// before it has been read, and the line says both, the change first. Both go when the reader
+// enters the chart, where maidr speaks for itself; the line is then empty, which a screen reader
+// does not read out over maidr's announcements. Until maidr.js is ready the line says it is
+// loading, or why it is not.
+let updated = ""; // "Chart updated: <title>", or that the new chart could not be made accessible
+let waiting = ""; // the waiting notice
+function showStatus() {
+  if (!ready) return;
+  const text = updated && waiting ? `${/[.!?…]$/.test(updated) ? updated : `${updated}.`} ${waiting}` : updated || waiting;
+  if (status.textContent !== text) status.textContent = text;
+}
+
+// maidr never moves the reader's focus, and the view moves it only to put a reader back in the
+// chart update_chart swapped (see update()). So a move or command the model makes while the
+// reader is outside the chart waits for them (maidr answers applied "on-next-focus") and happens
+// when they enter it. Until then the status line says so. maidr counts the waiting commands; it
+// keeps one waiting move, which it makes as soon as the reader enters the chart.
 let moveWaiting = false;
 let watchingKept = false;
 let noticing;
@@ -154,12 +343,14 @@ async function commandsWaiting() {
 function refreshNotice() {
   clearTimeout(noticing);
   noticing = setTimeout(async () => {
-    // Until maidr.js is ready the status line says it is loading, or why it is not.
     if (!ready) return;
+    const shown = revision;
     const commands = readerInChart() ? 0 : await commandsWaiting();
-    // Read again after the await: the reader may have entered the chart meanwhile.
-    const notice = readerInChart() ? "" : waitingNotice(moveWaiting, commands);
-    if (status.textContent !== notice) status.textContent = notice;
+    // Read again after the await: the reader may have entered the chart meanwhile, or
+    // update_chart swapped it, which drops what waited and refreshes the notice itself.
+    if (revision !== shown) return;
+    waiting = readerInChart() ? "" : waitingNotice(moveWaiting, commands);
+    showStatus();
   }, 300);
 }
 function waitingNotice(move, commands) {
@@ -176,6 +367,11 @@ document.addEventListener(
   async (event) => {
     refreshNotice();
     if (!ready || !chart.contains(event.target)) return;
+    // In the chart, maidr speaks for itself: the status line has said its piece. update_chart
+    // putting a reader back in says the change once their focus is in.
+    updated = "";
+    waiting = "";
+    showStatus();
     moveWaiting = false; // maidr makes it on this focus-in,
     // then runs the waiting commands, one every 500 ms. Read the position again once maidr
     // counts none left (at most 8, so a few seconds), or the reader has left the chart. One
@@ -184,7 +380,7 @@ document.addEventListener(
     watchingKept = true;
     try {
       for (let i = 0; i < 12 && readerInChart() && (await commandsWaiting()) > 0; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        await sleep(500);
       }
     } finally {
       watchingKept = false;
