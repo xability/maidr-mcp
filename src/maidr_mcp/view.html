@@ -8,7 +8,8 @@
   :root { color-scheme: light; }
   body { margin: 0; padding: 8px; background: #fff; color: #1a1a1a; font: 14px/1.4 system-ui, sans-serif; }
   #chart svg[maidr] { display: block; max-width: 100%; height: auto; }
-  #status:empty { display: none; }
+  /* Kept in the page when empty: a status region that appears with its text is not always read. */
+  #status:empty { margin: 0; }
 </style>
 </head>
 <body>
@@ -16,12 +17,16 @@
 <p id="status" role="status">Loading the chart…</p>
 <script type="module">
 // The chart view of maidr-mcp. It shows the SVG show_chart drew, loads maidr.js, and runs
-// the calls the server relays from the model on maidr's own WebMCP tools. It also tells the
-// model, through ui/update-model-context, where the reader is, for the model's next turn.
+// the calls the server relays from the model on maidr's own WebMCP tools. It swaps in the
+// chart update_chart draws, in place. It also tells the model, through
+// ui/update-model-context, where the reader is, for the model's next turn.
 import { App } from "{{EXT_APPS_JS}}";
 
 const MAIDR_JS = "{{MAIDR_JS}}";
+const UPDATE = "maidr_view_update"; // the server's call for update_chart, run here, not by maidr
+const chart = document.getElementById("chart");
 const status = document.getElementById("status");
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // maidr.js registers maidr_list_charts, maidr_get_layer_data and maidr_navigate on
 // document.modelContext. No host hands a view's tools to the model yet, so the view
@@ -43,6 +48,7 @@ Object.defineProperty(document, "modelContext", {
 
 const app = new App({ name: "maidr chart", version: "1" });
 let viewId;
+let revision = 0; // the server's revision of the chart shown; show_chart's is 0
 let stopped = false;
 
 app.addEventListener("toolresult", (result) => {
@@ -60,12 +66,13 @@ async function show(svg) {
     // A host that drops the result's _meta: ask the server, which keeps the SVG a while.
     const fetched = await app.callServerTool({ name: "maidr_view_svg", arguments: { viewId } }).catch(() => null);
     svg = fetched?.structuredContent?.svg;
+    revision = fetched?.structuredContent?.revision ?? 0;
   }
   if (typeof svg !== "string") {
     status.textContent = "This chart is no longer available. Ask for it again.";
     return;
   }
-  document.getElementById("chart").innerHTML = svg;
+  chart.innerHTML = svg;
   const script = document.createElement("script");
   script.src = MAIDR_JS;
   script.onload = () => {
@@ -94,24 +101,91 @@ async function run(call) {
   }
 }
 
+// update_chart: replaces the chart with the one the server now holds for this view, in place.
+// maidr lets go of the old chart (maidr:unbindchart unmounts it and drops it from its tools)
+// and binds the new one as it enters the page. A reader who was in the chart is put back in
+// it, on the new chart, since the old one took their focus with it; anyone else keeps theirs.
+// Either way the status line says the chart changed.
+async function update() {
+  const fetched = await app.callServerTool({ name: "maidr_view_svg", arguments: { viewId } }).catch(() => null);
+  const svg = fetched?.structuredContent?.svg;
+  const latest = fetched?.structuredContent?.revision;
+  if (typeof svg !== "string" || typeof latest !== "number") {
+    return { ok: false, error: "the chart view could not fetch the new chart" };
+  }
+  const readerInChart = document.hasFocus() && chart.contains(document.activeElement);
+  if (latest === revision) return { ok: true, readerInChart }; // an earlier call brought it
+
+  const hadTools = tools.has("maidr_list_charts");
+  const old = chart.querySelector("svg[maidr]");
+  if (old) document.dispatchEvent(new CustomEvent("maidr:unbindchart", { detail: old }));
+  chart.innerHTML = svg;
+  revision = latest;
+  lastPosition = null; // it named a point of the old chart
+  void app
+    .updateModelContext({
+      content: [{ type: "text", text: `maidr chart ${viewId} now shows the chart update_chart drew; the reader is on none of its points yet.` }],
+    })
+    .catch(() => {});
+
+  const plot = chart.querySelector("svg[maidr]");
+  let data = null;
+  try {
+    data = JSON.parse(plot?.getAttribute("maidr") ?? "null");
+  } catch {}
+  const target = data && (await bound(plot, data.id, hadTools));
+  if (!target) {
+    status.textContent = "The chart changed, but maidr could not make the new one accessible.";
+    return { ok: false, error: "maidr did not take up the new chart" };
+  }
+  // Only into focus that went nowhere: a reader who has since moved on keeps their place.
+  const lost = document.activeElement === null || document.activeElement === document.body;
+  if (readerInChart && document.hasFocus() && lost) target.focus();
+  const title = data.title ?? data.subplots?.[0]?.[0]?.layers?.[0]?.title;
+  status.textContent = typeof title === "string" && title ? `Chart updated: ${title}` : "Chart updated.";
+  return { ok: true, readerInChart };
+}
+
+// The element the reader Tabs to, once maidr has bound the new plot and, while its agent tools
+// are on, lists that chart alone; null after five seconds.
+async function bound(plot, chartId, hadTools) {
+  for (let i = 0; i < 100; i++) {
+    const target = plot.closest('[tabindex="0"]');
+    if (target) {
+      if (!hadTools && !tools.has("maidr_list_charts")) return target;
+      const charts = (await run({ tool: "maidr_list_charts" }))?.content?.charts;
+      if (charts?.length === 1 && charts[0].chartId === chartId) return target;
+    }
+    await sleep(50);
+  }
+  return null;
+}
+
 async function relay() {
   let backoff = 1000;
   while (!stopped) {
     let calls;
+    let latest;
     try {
       const polled = await app.callServerTool(
-        { name: "maidr_view_poll", arguments: { viewId } },
+        { name: "maidr_view_poll", arguments: { viewId, revision } },
         { timeout: 45_000 },
       );
       calls = polled.structuredContent?.calls ?? [];
+      latest = polled.structuredContent?.revision ?? 0;
       backoff = 1000;
     } catch {
-      await new Promise((resolve) => setTimeout(resolve, backoff));
+      await sleep(backoff);
       backoff = Math.min(backoff * 2, 30_000);
       continue;
     }
+    // Behind the server with no update on its way: this view missed one, while out of view
+    // or because the host mounted it again from show_chart's result.
+    if (latest > revision && !calls.some((call) => call.tool === UPDATE)) {
+      if (!(await update()).ok) await sleep(5_000); // the next poll would ask again at once
+    }
     for (const call of calls) {
-      const result = await run(call);
+      const result = call.tool === UPDATE ? await update() : await run(call);
       await app
         .callServerTool({ name: "maidr_view_reply", arguments: { viewId, callId: call.callId, result } })
         .catch(() => {});

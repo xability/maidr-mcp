@@ -3,7 +3,7 @@
 import anyio
 import pytest
 
-from maidr_mcp.relay import Relay
+from maidr_mcp.relay import UNKNOWN_VIEW, UPDATE, Relay
 
 pytestmark = pytest.mark.anyio
 
@@ -108,3 +108,56 @@ async def test_limits():
         await anyio.sleep(0.01)
         result = await relay.call(view_id, "maidr_list_charts", {})
     assert result == {"ok": False, "error": "too many calls are waiting for this chart"}
+
+
+async def test_an_update_replaces_the_chart_and_reaches_the_view():
+    relay = Relay()
+    view_id = relay.open(svg="<svg>old</svg>")
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(answer, relay, view_id, {"ok": True, "readerInChart": False})
+        result = await relay.update(view_id, "<svg>new</svg>")
+    assert result == {"ok": True, "readerInChart": False, "tool": UPDATE, "arguments": {}}
+    assert relay.svg(view_id) == "<svg>new</svg>"
+    assert relay.revision(view_id) == 1
+
+
+async def test_an_update_to_an_unknown_view_is_an_error_naming_show_chart():
+    relay = Relay()
+    result = await relay.update("nope", "<svg/>")
+    assert result == {"ok": False, "error": UNKNOWN_VIEW}
+    assert "show_chart" in UNKNOWN_VIEW
+    assert not relay.holds("nope")
+
+
+async def test_an_update_nobody_answers_is_kept_for_the_view_to_catch_up():
+    relay = Relay(reply_seconds=0.05)
+    view_id = relay.open(svg="<svg>old</svg>")
+    result = await relay.update(view_id, "<svg>new</svg>")
+    assert result["ok"] is False and "did not answer" in result["error"]
+    assert relay.svg(view_id) == "<svg>new</svg>"
+    # A view still showing revision 0 is answered at once, so that it fetches the new chart.
+    with anyio.fail_after(1):
+        assert await relay.poll(view_id, revision=0) == []
+    # One showing it waits for calls as usual.
+    with anyio.move_on_after(0.05) as waiting:
+        await relay.poll(view_id, revision=1)
+    assert waiting.cancelled_caught
+
+
+async def test_a_view_taken_back_after_a_restart_keeps_the_revision_it_shows():
+    relay = Relay(poll_seconds=0.01)
+    assert await relay.poll("from-before-the-restart", revision=2) == []
+    assert relay.revision("from-before-the-restart") == 2
+    assert relay.svg("from-before-the-restart") is None
+
+
+async def test_an_update_is_refused_without_replacing_when_the_queue_is_full():
+    relay = Relay(max_queue=1, reply_seconds=0.1)
+    view_id = relay.open(svg="<svg>old</svg>")
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(relay.call, view_id, "maidr_list_charts", {})
+        await anyio.sleep(0.01)
+        result = await relay.update(view_id, "<svg>new</svg>")
+    assert result == {"ok": False, "error": "too many calls are waiting for this chart"}
+    assert relay.svg(view_id) == "<svg>old</svg>"
+    assert relay.revision(view_id) == 0
