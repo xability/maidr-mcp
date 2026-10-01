@@ -1,11 +1,12 @@
 # maidr-mcp
 
-An [MCP](https://modelcontextprotocol.io) server that shows accessible [maidr](https://maidr.ai) charts inside ChatGPT and Claude conversations, and lets the conversation's model move the reader through them.
+An [MCP](https://modelcontextprotocol.io) server that shows accessible [maidr](https://maidr.ai) charts inside ChatGPT and Claude conversations, and lets the conversation's model move the reader through them and run the chart's commands for them.
 
-The model calls `show_chart` with the data, and the chart appears in the conversation as an [MCP App](https://modelcontextprotocol.io/extensions/apps). A blind or low-vision reader Tabs into it and explores it the way they explore any maidr chart: arrow keys, screen reader, sonification, braille. Two things then happen through the model:
+The model calls `show_chart` with the data, and the chart appears in the conversation as an [MCP App](https://modelcontextprotocol.io/extensions/apps). A blind or low-vision reader Tabs into it and explores it the way they explore any maidr chart: arrow keys, screen reader, sonification, braille. Three things then happen through the model:
 
 - **The model can take the reader somewhere.** When the reader asks for "the highest bar", the model calls `maidr_get_layer_data` to find it and `maidr_navigate` to move there, and maidr announces the point by speech, braille and sound.
-- **The model knows where the reader is.** As the reader moves, the chart tells the model their position, so "what is this point?" needs no tool call.
+- **The model can press the chart's keys for the reader.** When the reader asks to turn braille off, play the chart, or jump to the lowest value, the model calls `maidr_list_commands` to find the command and the reader's current modes, and `maidr_run_command` to run it. maidr announces the result as if the reader had pressed the key, and the model tells them which key that was.
+- **The model knows where the reader is.** As the reader moves, the chart tells the model their position, so "what is this point?" needs no tool call. Within a turn, `maidr_list_charts` reads it live.
 
 > **Experimental.** Checked end to end in the MCP Apps SDK's reference host ([below](#try-it-in-the-reference-host)). Not yet checked in claude.ai or ChatGPT.
 
@@ -20,15 +21,18 @@ The model calls `show_chart` with the data, and the chart appears in the convers
 
    If hosts adopt WebMCP for MCP Apps, as [ext-apps#798](https://github.com/modelcontextprotocol/ext-apps/pull/798) proposes, maidr's tools reach the model directly and the relay can go.
 4. On each key the reader presses in the chart, the view sends their position with `ui/update-model-context`.
+5. maidr never moves the reader's focus. A move or command the model makes while the reader is outside the chart waits for them, and until they enter the chart, the view's status line says so: "The assistant has a move waiting for you: Tab into the chart to hear it."
 
 ## Tools
 
 | Tool | Called by | Does |
 | --- | --- | --- |
 | `show_chart` | model | Draws the chart and shows it. Returns the `viewId` the other tools take. |
-| `maidr_list_charts` | model | Returns the chart's layers, point counts, and where the reader is. Silent. |
+| `maidr_list_charts` | model | Returns the chart's layers, point counts, and, while the reader is in the chart, where they are, live. Silent. |
 | `maidr_get_layer_data` | model | Returns a page of a layer's points, each with the `target` that `maidr_navigate` takes. Silent. |
 | `maidr_navigate` | model | Moves the reader to a point and announces it. |
+| `maidr_list_commands` | model | Returns the reader's commands, each with its id, title, keys, and whether the model can run it, and the reader's current modes (text, sound, braille, autoplay and more). Silent. |
+| `maidr_run_command` | model | Runs one of the reader's commands, such as `toggle_braille`, `autoplay_forward` or `go_to_max_value`, as if they had pressed its keys, and announces the result. Commands that open a dialog or text field are the reader's own. |
 | `maidr_view_poll`, `maidr_view_reply`, `maidr_view_svg` | the chart view only | Carry the relay, and the SVG for hosts that drop `_meta`. |
 
 `show_chart` takes one of these chart types. Each maps onto the maidr layer type shown:
@@ -105,16 +109,18 @@ bash e2e/run.sh
 
 It checks:
 - the chart appears;
-- the model's calls are answered by maidr inside the chart;
-- a move made while the reader is in the chat waits, and is announced when they Tab in;
+- the model's calls are answered by maidr inside the chart, `maidr_list_commands` included;
+- a move and a command made while the reader is in the chat wait, the chart's status line says so, and when the reader Tabs in, the move is announced, the command takes effect, and the notice goes;
 - the arrow keys announce, and the reader's position reaches the host as model context;
-- a move made while the reader is in the chart is announced at once;
+- a move and commands made while the reader is in the chart take effect at once, and `maidr_list_charts` gives the model the position a command took the reader to;
 - there are no console errors or CSP violations.
+
+`MAIDR_JS_FILE=/path/to/maidr/dist/maidr.js bash e2e/run.sh` runs the same checks against a local build of maidr.js in place of the pinned release.
 
 ## Limits
 
-- **The model learns the reader's position one turn late.** It sees the position on its next turn, not in the middle of one.
-- **Moves wait until the reader is in the chart.** maidr never moves focus. A move made while the reader is typing to the model is kept, and announced when they Tab back into the chart. `maidr_navigate` says so (`applied: "on-next-focus"`), and the model should tell them.
+- **The position the chart reports reaches the model with the reader's next message.** Hosts apply `ui/update-model-context` on the next turn, so within a turn the model context misses the model's own moves and commands, and the reader moving on while the model answers. `maidr_list_charts` reads the position live, and the server's instructions tell the model to call it when the reader asks about "this point" and the context may be stale. What remains: maidr knows the position only while the reader is in the chart, so while they are typing to the model the last report stands; and a model that skips the call answers from the context alone.
+- **Moves and commands wait until the reader is in the chart.** maidr never moves focus, so a move or command made while the reader is typing to the model is kept, and happens when they Tab back into the chart: the move first, then the commands, half a second apart. The tool answers `applied: "on-next-focus"` and the model is told to say so; the chart's status line says so too, where a screen reader browsing the conversation finds it. What remains is that the reader has to go to the chart: nothing happens until they do, and at most 8 commands wait.
 - **Each `show_chart` call adds a chart.** Claude mounts a new view for every call, and earlier views stay.
 - **The relay keeps a request open.** The view's poll holds a request for up to 20 seconds. Whether a given host limits calls made from a view is not yet known.
 - **There is no authentication.** Anyone with the server's URL can draw charts. A chart can only be read or driven with its `viewId`, a random 24-character token.

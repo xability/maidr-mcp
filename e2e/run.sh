@@ -6,7 +6,11 @@
 #
 # EXT_APPS_REF picks the ext-apps tag the host is built from. CHROMIUM points the
 # driver at a Chromium binary; without it, run `npx playwright-core install chromium`
-# in e2e/ first.
+# in e2e/ first. MAIDR_JS_FILE points at a local maidr.js build (maidr's dist/maidr.js)
+# that the view loads in place of the release the server pins, to check a maidr change
+# before it is published:
+#
+#   MAIDR_JS_FILE=../maidr/dist/maidr.js bash e2e/run.sh
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
