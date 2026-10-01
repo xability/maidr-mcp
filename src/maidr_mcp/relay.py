@@ -9,6 +9,12 @@ A ``viewId`` is the only key to a chart: a model call names one, and nothing
 falls back to "the only open chart", which on a shared server could be another
 user's. Everything lives in this process's memory, so the server runs as one
 instance.
+
+``update_chart`` replaces a view's chart in place through the same queue: the
+relay keeps the new SVG and hands the view a call of its own, ``maidr_view_update``,
+which is not one of maidr's tools. Each replacement raises the view's revision, so a
+view that missed one, because it was out of view or the host mounted it again from
+``show_chart``'s result, learns from its next poll that it is behind and fetches it.
 """
 
 from __future__ import annotations
@@ -19,6 +25,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import anyio
+
+UPDATE = "maidr_view_update"
+"""The call that tells a view to swap in the chart the server now holds for it."""
+
+UNKNOWN_VIEW = (
+    "unknown viewId: the chart is closed, or the server restarted. Show it again with show_chart."
+)
 
 
 @dataclass
@@ -31,6 +44,7 @@ class Call:
 @dataclass
 class _View:
     svg: str | None = None
+    revision: int = 0  # how many times update_chart replaced the chart show_chart drew
     queue: list[Call] = field(default_factory=list)
     wake: anyio.Event | None = None  # set by a call; made by the poll waiting for it
     seen: float = field(default_factory=time.monotonic)
@@ -84,20 +98,41 @@ class Relay:
         self._views[view_id] = _View(svg=svg)
         return view_id
 
+    def holds(self, view_id: str) -> bool:
+        """Whether the server holds this view."""
+        return view_id in self._views
+
     def svg(self, view_id: str) -> str | None:
-        """The SVG a view was opened with, while the server still holds it."""
+        """The SVG a view should show, the latest update_chart drew or else show_chart's, while
+        the server still holds it."""
         view = self._views.get(view_id)
         return view.svg if view else None
+
+    def revision(self, view_id: str) -> int:
+        """How many times the view's chart was replaced; 0 for show_chart's own."""
+        view = self._views.get(view_id)
+        return view.revision if view else 0
+
+    async def update(self, view_id: str, svg: str) -> dict[str, Any]:
+        """Replace the chart a view shows with ``svg`` and return the view's answer.
+
+        The server keeps the new SVG whatever the view answers: a view that does not answer
+        now fetches it when its next poll says it is behind.
+        """
+        view = self._views.get(view_id)
+        if view is None:
+            return {"ok": False, "error": UNKNOWN_VIEW}
+        if len(view.queue) >= self.max_queue:
+            return {"ok": False, "error": "too many calls are waiting for this chart"}
+        view.svg = svg
+        view.revision += 1
+        return await self.call(view_id, UPDATE, {})
 
     async def call(self, view_id: str, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Run ``tool`` in the view and return maidr's answer, or an error the model can act on."""
         view = self._views.get(view_id)
         if view is None:
-            return {
-                "ok": False,
-                "error": "unknown viewId: the chart is closed, or the server restarted. "
-                "Show it again.",
-            }
+            return {"ok": False, "error": UNKNOWN_VIEW}
         if len(view.queue) >= self.max_queue:
             return {"ok": False, "error": "too many calls are waiting for this chart"}
         call = Call(secrets.token_urlsafe(12), tool, arguments)
@@ -121,19 +156,23 @@ class Relay:
             "conversation; ask the reader to bring it back into view.",
         }
 
-    async def poll(self, view_id: str) -> list[Call]:
+    async def poll(self, view_id: str, revision: int | None = None) -> list[Call]:
         """The calls waiting for a view, after waiting up to ``poll_seconds`` for one.
 
-        A view the server does not know, after a restart, is taken back: it holds the id.
+        ``revision`` is the revision of the chart the view shows. A view behind the server's
+        is answered at once, so that it fetches the chart it missed.
+
+        A view the server does not know, after a restart, is taken back: it holds the id, and
+        the chart it shows is the latest the server knows of.
         """
         view = self._views.get(view_id)
         if view is None:
             self._sweep()
             if len(self._views) >= self.max_views:
                 return []
-            view = self._views[view_id] = _View()
+            view = self._views[view_id] = _View(revision=revision or 0)
         view.seen = time.monotonic()
-        if not view.queue:
+        if not view.queue and (revision is None or revision >= view.revision):
             view.wake = anyio.Event()
             with anyio.move_on_after(self.poll_seconds):
                 await view.wake.wait()
