@@ -46,7 +46,15 @@ Every type also takes `title`, `x_label` and `y_label`.
 
 ## Use it
 
-Run the server, then add its URL to Claude or ChatGPT. Both need a public HTTPS address; they cannot reach `localhost`.
+What the server needs depends on how the host reaches it:
+
+| Host | How it connects | What the server needs |
+| --- | --- | --- |
+| Claude (web, Desktop, mobile) | a custom connector, which takes a remote MCP server | a public HTTPS address |
+| ChatGPT | a developer-mode app | a public HTTPS address, or [Secure MCP Tunnel](#chatgpt-without-a-public-address) to your own machine |
+| ChatGPT desktop app | its own MCP servers, started over STDIO | nothing hosted; see [below](#chatgpt-without-a-public-address) for what is untested |
+
+### With a public address
 
 ```bash
 uvx --from git+https://github.com/xability/maidr-mcp maidr-mcp --host 0.0.0.0 --port 8000
@@ -64,6 +72,24 @@ The endpoint is `/mcp`, over Streamable HTTP.
 - **Where charts render:** on web, Desktop, and iOS/Android once the connector is added.
 
 **ChatGPT.** Turn on developer mode, then create an app for `https://<your-host>/mcp`. Developer mode is available on the web for Plus, Pro, Business, Enterprise and Education accounts.
+
+### ChatGPT without a public address
+
+**Your own machine, through Secure MCP Tunnel.** ChatGPT calls an app's MCP server from OpenAI's side, so it cannot reach `localhost` directly. OpenAI's [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) connects it to a server that stays off the internet:
+- **Server:** runs on your machine, either `maidr-mcp` (HTTP at `127.0.0.1:8000/mcp`) or `maidr-mcp --stdio`.
+- **Tunnel client:** OpenAI's open-source client runs next to the server and opens only outbound HTTPS to OpenAI. It needs a `tunnel_id` from the Platform's tunnel settings and a runtime API key.
+- **App:** you add it in developer mode through the tunnel, as that guide describes.
+- **Uptime:** the machine has to stay on while the chart is in use.
+
+**The ChatGPT desktop app's own MCP servers.** The [desktop app can start a local server itself](https://learn.chatgpt.com/docs/extend/mcp). Open Settings > MCP servers > Add server, choose STDIO, and give it this command, which needs [uv](https://docs.astral.sh/uv/):
+
+```bash
+uvx --from git+https://github.com/xability/maidr-mcp maidr-mcp --stdio
+```
+
+The desktop app shares this configuration with the Codex CLI and IDE extension. There are two caveats:
+- Whether the app draws an MCP App's UI for a server added this way is not documented.
+- This route has not been tried with maidr-mcp, so it is not known whether the chart appears.
 
 ## Try it in the reference host
 
