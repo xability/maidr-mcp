@@ -118,6 +118,7 @@ def test_text_from_the_model_stays_text():
         {"type": "line", "x": [1, float("inf")], "series": [{"values": [1, 2]}]},
         {"type": "scatter", "x": [1, 2], "y": [1]},
         {"type": "heatmap", "x_labels": ["a"], "y_labels": ["r1", "r2"], "values": [[1]]},
+        {"type": "line", "x": ["a" * 101], "series": [{"values": [1]}]},
         {"type": "pie", "values": [1, 2]},
     ],
     ids=[
@@ -130,6 +131,7 @@ def test_text_from_the_model_stays_text():
         "infinite x",
         "unpaired scatter",
         "ragged heatmap",
+        "long x label",
         "unknown type",
     ],
 )

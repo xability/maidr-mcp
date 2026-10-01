@@ -89,7 +89,7 @@ class LineChart(_Chart):
     """One line per series over a shared x."""
 
     type: Literal["line"]
-    x: list[float | str] = Field(
+    x: list[float | Label] = Field(
         min_length=1, max_length=MAX_LINE_POINTS, description="Numbers, or labels such as dates."
     )
     series: list[Series] = Field(
