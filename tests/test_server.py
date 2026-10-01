@@ -4,6 +4,7 @@ import anyio
 import pytest
 from mcp import Client
 
+from maidr_mcp.relay import Relay
 from maidr_mcp.server import (
     CDN,
     MAIDR_JS_VERSION,
@@ -89,6 +90,27 @@ async def test_a_model_call_is_relayed_to_the_view_and_answered():
 
         svg = await client.call_tool("maidr_view_svg", {"viewId": view_id})
         assert svg.structured_content["svg"].startswith("<svg")
+
+
+async def test_the_view_says_how_long_its_poll_may_wait():
+    async with Client(build_server()) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+        wait = tools["maidr_view_poll"].input_schema["properties"]["wait"]
+        assert (wait["minimum"], wait["maximum"], wait["default"]) == (0, 20, 20)
+        with anyio.fail_after(2):  # a short poll, for a host that cuts long ones
+            polled = await client.call_tool("maidr_view_poll", {"viewId": "v", "wait": 0})
+        assert polled.structured_content == {"calls": []}
+        for bad in (-1, 21, "soon"):
+            refused = await client.call_tool("maidr_view_poll", {"viewId": "v", "wait": bad})
+            assert refused.is_error, bad
+
+
+async def test_a_poll_without_a_wait_holds_as_long_as_the_relay_allows():
+    async with Client(build_server(Relay(poll_seconds=0.2))) as client:
+        started = anyio.current_time()
+        polled = await client.call_tool("maidr_view_poll", {"viewId": "v"})
+        assert anyio.current_time() - started >= 0.2
+    assert polled.structured_content == {"calls": []}
 
 
 async def test_a_layer_without_a_point_count_is_named_without_one():

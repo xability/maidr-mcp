@@ -15,8 +15,10 @@ The model calls `show_chart` with the data, and the chart appears in the convers
 2. The view loads [maidr.js](https://github.com/xability/maidr) and the MCP Apps SDK from `cdn.jsdelivr.net`, the only domain its CSP declares, at pinned versions.
 3. maidr.js registers its own [WebMCP tools](https://github.com/xability/maidr/blob/main/docs/WEBMCP.md) on `document.modelContext`. No host hands a view's tools to the model yet ([ext-apps#797](https://github.com/modelcontextprotocol/ext-apps/issues/797)), so the view supplies `document.modelContext` itself. Each server tool of the same name relays its call to the view that is open:
    - the model calls the server tool;
-   - the view long-polls an app-only tool, picks up the call, runs maidr's tool, and posts maidr's answer back;
+   - the view polls an app-only tool, picks up the call, runs maidr's tool, and posts maidr's answer back;
    - that answer becomes the model's tool result.
+
+   The poll is a long poll: the server holds it for up to 20 seconds until a call comes, so the call reaches the chart at once. If the host cuts or refuses a request held that long, the view falls back to short polls, which the server answers at once, one every 2 seconds, so the model's call is still answered within the 10 seconds the server waits for the chart. The view tries a long poll again after a minute, and waits twice as long after each one the host cuts.
 
    If hosts adopt WebMCP for MCP Apps, as [ext-apps#798](https://github.com/modelcontextprotocol/ext-apps/pull/798) proposes, maidr's tools reach the model directly and the relay can go.
 4. On each key the reader presses in the chart, the view sends their position with `ui/update-model-context`.
@@ -109,14 +111,15 @@ It checks:
 - a move made while the reader is in the chat waits, and is announced when they Tab in;
 - the arrow keys announce, and the reader's position reaches the host as model context;
 - a move made while the reader is in the chart is announced at once;
-- there are no console errors or CSP violations.
+- there are no console errors or CSP violations;
+- when the host cuts long polls, the view falls back to short polls, still answers the model, and stops polling when the chart is closed.
 
 ## Limits
 
 - **The model learns the reader's position one turn late.** It sees the position on its next turn, not in the middle of one.
 - **Moves wait until the reader is in the chart.** maidr never moves focus. A move made while the reader is typing to the model is kept, and announced when they Tab back into the chart. `maidr_navigate` says so (`applied: "on-next-focus"`), and the model should tell them.
 - **Each `show_chart` call adds a chart.** Claude mounts a new view for every call, and earlier views stay.
-- **The relay keeps a request open.** The view's poll holds a request for up to 20 seconds. Whether a given host limits calls made from a view is not yet known.
+- **The relay polls.** Each open chart makes a request every 20 seconds, or every 2 seconds on a host that cuts requests held open, where a model's call can also take up to 2 seconds longer to reach the chart. A host that also allows a view fewer than 30 calls a minute leaves some of the model's calls unanswered. Which hosts limit calls from a view is not yet known.
 - **There is no authentication.** Anyone with the server's URL can draw charts. A chart can only be read or driven with its `viewId`, a random 24-character token.
 - **Six chart families so far.** The server does not take plotting code.
 

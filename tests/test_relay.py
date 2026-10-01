@@ -72,6 +72,52 @@ async def test_a_poll_with_nothing_to_do_returns_empty():
     assert await relay.poll(relay.open()) == []
 
 
+async def test_a_short_poll_answers_at_once():
+    relay = Relay()  # a long poll would wait 20 seconds
+    view_id = relay.open()
+    with anyio.fail_after(1):
+        assert await relay.poll(view_id, wait=0) == []
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(relay.call, view_id, "maidr_list_charts", {})
+        await anyio.sleep(0.01)
+        with anyio.fail_after(1):
+            calls = await relay.poll(view_id, wait=0)
+        assert [c.tool for c in calls] == ["maidr_list_charts"]
+        relay.reply(view_id, calls[0].call_id, {"ok": True})
+
+
+async def test_a_poll_waits_no_longer_than_the_relay_allows():
+    relay = Relay(poll_seconds=0.05)
+    view_id = relay.open()
+    with anyio.fail_after(1):
+        assert await relay.poll(view_id, wait=20) == []
+        assert await relay.poll(view_id, wait=-1) == []  # taken as 0
+
+
+async def test_a_poll_the_host_cut_short_leaves_later_calls_to_the_view():
+    # The host gave up on the view's long poll, but the server's is still waiting. The view
+    # polls again, short; a call that comes after must go to the view, not the abandoned poll.
+    relay = Relay()
+    view_id = relay.open()
+    abandoned, result = [], {}
+
+    async def abandoned_poll():
+        abandoned.extend(await relay.poll(view_id, wait=0.2))
+
+    async def model():
+        result.update(await relay.call(view_id, "maidr_list_charts", {}))
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(abandoned_poll)
+        await anyio.sleep(0.01)
+        assert await relay.poll(view_id, wait=0) == []
+        tg.start_soon(model)
+        await anyio.sleep(0.3)  # the abandoned poll runs out, and must take nothing
+        assert abandoned == []
+        await answer(relay, view_id, {"ok": True})  # the view's next poll
+    assert result["ok"] is True
+
+
 async def test_a_view_outliving_a_restart_is_taken_back():
     relay = Relay()
     async with anyio.create_task_group() as tg:

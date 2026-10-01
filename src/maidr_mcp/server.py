@@ -14,7 +14,7 @@ from pydantic import Field
 
 from maidr_mcp import __version__
 from maidr_mcp.charts import Chart, render
-from maidr_mcp.relay import Relay
+from maidr_mcp.relay import POLL_SECONDS, Relay
 
 VIEW_URI = "ui://maidr/chart.html"
 SVG_META_KEY = "ai.maidr/svg"
@@ -55,6 +55,16 @@ ChartId = Annotated[
 ]
 LayerId = Annotated[
     str, Field(min_length=1, max_length=256, description="A layerId from maidr_list_charts.")
+]
+PollWait = Annotated[
+    float,
+    Field(
+        ge=0,
+        le=POLL_SECONDS,
+        allow_inf_nan=False,
+        description="Seconds to wait for a call when none is waiting: 20 holds the request open, "
+        "0 answers at once, for a host that cuts requests held open.",
+    ),
 ]
 
 
@@ -118,10 +128,14 @@ def build_server(relay: Relay | None = None) -> MCPServer:
         resource_uri=VIEW_URI,
         visibility=["app"],
         name="maidr_view_poll",
-        description="The model's calls waiting for a chart view; waits up to 20 seconds for one.",
+        description="The model's calls waiting for a chart view; waits up to `wait` seconds "
+        "for one.",
     )
-    async def maidr_view_poll(viewId: ViewId) -> dict[str, Any]:  # noqa: N803
-        calls = await relay.poll(viewId)
+    async def maidr_view_poll(
+        viewId: ViewId,  # noqa: N803
+        wait: PollWait = POLL_SECONDS,
+    ) -> dict[str, Any]:
+        calls = await relay.poll(viewId, wait)
         return {
             "calls": [
                 {"callId": c.call_id, "tool": c.tool, "arguments": c.arguments} for c in calls

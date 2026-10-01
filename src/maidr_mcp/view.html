@@ -43,7 +43,8 @@ Object.defineProperty(document, "modelContext", {
 
 const app = new App({ name: "maidr chart", version: "1" });
 let viewId;
-let stopped = false;
+// Aborted when the host tears the view down: the relay stops, and a poll in flight is cancelled.
+const stop = new AbortController();
 
 app.addEventListener("toolresult", (result) => {
   if (viewId !== undefined || result.isError) return;
@@ -51,7 +52,7 @@ app.addEventListener("toolresult", (result) => {
   if (typeof viewId === "string") void show(result._meta?.["ai.maidr/svg"]);
 });
 app.onteardown = async () => {
-  stopped = true;
+  stop.abort();
   return {};
 };
 
@@ -94,22 +95,58 @@ async function run(call) {
   }
 }
 
+// How the view fetches the model's calls. A long poll is held by the server until a call
+// comes or LONG_WAIT runs out, so a call reaches maidr at once and an idle chart makes one
+// request every 20 seconds. A host may cut a request held that long, or refuse it. When a long
+// poll fails, or comes back empty before its wait is up, the view switches to short polls,
+// which the server answers at once. It tries a long poll again after LONG_RETRY, and doubles
+// that each time a long poll fails, so on a host that cuts them it settles on short polls
+// rather than flipping back and forth.
+//
+// Short polls still answer the model within the server's reply window (reply_seconds, 10 s).
+// At worst a call reaches the server just after a short poll has left it, and then takes
+//     2 s waiting for the next poll                      (SHORT_EVERY)
+//   + one round trip through the host: that poll's answer to the view, and maidr's reply
+//     back to the server; say 3 s on a slow host
+//   + maidr running the call, well under 1 s
+//   = under 6 s, 4 s inside the window.
+// The interval does not grow while the chart is idle, since a call may come at any moment;
+// only failed polls back off, while calls cannot be answered anyway. Polls start at least
+// MIN_GAP apart, so a chart polls once a second at most, and 30 times a minute on short polls.
+const LONG_WAIT = 20; // s: the longest the server holds a poll
+const SHORT_EVERY = 2_000; // ms between the starts of two short polls
+const MIN_GAP = 1_000; // ms between the starts of any two polls: one a second at most
+const MAX_BACKOFF = 30_000; // ms: the longest pause after short polls fail
+const LONG_RETRY = 60_000; // ms on short polls before a long poll is tried again
+const MAX_LONG_RETRY = 30 * 60_000;
+
 async function relay() {
-  let backoff = 1000;
-  while (!stopped) {
-    let calls;
-    try {
-      const polled = await app.callServerTool(
-        { name: "maidr_view_poll", arguments: { viewId } },
-        { timeout: 45_000 },
-      );
-      calls = polled.structuredContent?.calls ?? [];
-      backoff = 1000;
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, backoff));
-      backoff = Math.min(backoff * 2, 30_000);
+  let wait = LONG_WAIT; // seconds the server may hold the next poll
+  let longRetry = LONG_RETRY; // what the view has learned of the host: grows with each cut
+  let longAgain = 0; // when to try a long poll again
+  let failures = 0; // short polls failed in a row
+  let lastPoll = -Infinity; // when the last poll started
+  while (!stop.signal.aborted) {
+    if (!wait && !failures && performance.now() >= longAgain) wait = LONG_WAIT;
+    await pause(lastPoll + (wait ? MIN_GAP : SHORT_EVERY) - performance.now());
+    if (stop.signal.aborted) break;
+    lastPoll = performance.now();
+    const calls = await poll(wait);
+    if (stop.signal.aborted) break;
+    if (!calls && wait) {
+      // The host does not hold a poll this long, or not now: poll short from here on.
+      wait = 0;
+      longAgain = performance.now() + longRetry;
+      longRetry = Math.min(longRetry * 2, MAX_LONG_RETRY);
       continue;
     }
+    if (!calls) {
+      // Short polls fail too: the host or the server is down. Back off.
+      failures += 1;
+      await pause(Math.min(SHORT_EVERY * 2 ** failures, MAX_BACKOFF));
+      continue;
+    }
+    failures = 0;
     for (const call of calls) {
       const result = await run(call);
       await app
@@ -118,6 +155,39 @@ async function relay() {
     }
     if (calls.length) refreshPosition();
   }
+}
+
+// One poll: the calls the server hands over, or null when the poll failed, or came back empty
+// before its wait was up. The server holds a poll for its whole wait unless a call comes, so
+// an early empty answer means something on the way cut it short.
+async function poll(wait) {
+  const started = performance.now();
+  try {
+    const polled = await app.callServerTool(
+      { name: "maidr_view_poll", arguments: { viewId, wait } },
+      { timeout: (wait + 25) * 1000, signal: stop.signal }, // the hold, and time for the host
+    );
+    const calls = polled.structuredContent?.calls;
+    if (polled.isError || !Array.isArray(calls)) return null;
+    if (!calls.length && performance.now() - started < (wait - 1) * 1000) return null;
+    return calls;
+  } catch {
+    return null;
+  }
+}
+
+// Resolves after ms, or at once when the view is torn down.
+function pause(ms) {
+  return new Promise((resolve) => {
+    if (stop.signal.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      stop.signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, Math.max(0, ms));
+    stop.signal.addEventListener("abort", done);
+  });
 }
 
 // The reader's position goes to the model for its next turn, so a question such as
