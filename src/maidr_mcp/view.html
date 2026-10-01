@@ -142,6 +142,7 @@ async function relay() {
 // screen reader browsing the conversation finds it. maidr counts the waiting commands; it keeps
 // one waiting move, which it makes as soon as the reader enters the chart.
 let moveWaiting = false;
+let watchingKept = false;
 let noticing;
 function readerInChart() {
   return document.hasFocus() && chart.contains(document.activeElement);
@@ -177,9 +178,16 @@ document.addEventListener(
     if (!ready || !chart.contains(event.target)) return;
     moveWaiting = false; // maidr makes it on this focus-in,
     // then runs the waiting commands, one every 500 ms. Read the position again once maidr
-    // counts none left (at most 8, so a few seconds), or the reader has left the chart.
-    for (let i = 0; i < 12 && readerInChart() && (await commandsWaiting()) > 0; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+    // counts none left (at most 8, so a few seconds), or the reader has left the chart. One
+    // watch at a time: moving between controls inside the chart fires focusin again.
+    if (watchingKept) return;
+    watchingKept = true;
+    try {
+      for (let i = 0; i < 12 && readerInChart() && (await commandsWaiting()) > 0; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    } finally {
+      watchingKept = false;
     }
     refreshPosition();
   },

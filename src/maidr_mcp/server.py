@@ -19,7 +19,7 @@ from maidr_mcp.relay import Relay
 VIEW_URI = "ui://maidr/chart.html"
 SVG_META_KEY = "ai.maidr/svg"
 CDN = "https://cdn.jsdelivr.net"
-MAIDR_JS_VERSION = "4.11.0"
+MAIDR_JS_VERSION = "4.12.0"
 EXT_APPS_VERSION = "2.0.3"
 
 INSTRUCTIONS = """\
@@ -77,8 +77,9 @@ LayerId = Annotated[
 ]
 # The command ids maidr's maidr_run_command takes (the enum of its own inputSchema, which maidr's
 # docs/WEBMCP.md lists), in the order maidr_list_commands lists them: typed so the model sees the
-# choices, and checked again by maidr. tests/test_server.py pins them too. Check both against
-# maidr whenever MAIDR_JS_VERSION is raised.
+# choices, and checked again by maidr. tests/test_server.py pins them too, and e2e/run.sh fails
+# when they differ from what the pinned maidr.js lists as runnable: raise MAIDR_JS_VERSION and
+# run it.
 RunnableCommand = Literal[
     "move_left",
     "move_right",

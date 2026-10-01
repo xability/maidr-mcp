@@ -23,6 +23,18 @@ function check(step, ok, detail) {
   if (!ok) failures.push(step);
 }
 
+/** The server's tool list, as a model's host reads it. */
+async function listTools() {
+  const response = await fetch(SERVER_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+  });
+  const body = await response.text();
+  const line = body.split("\n").find((l) => l.startsWith("data: "));
+  return JSON.parse(line ? line.slice(6) : body).result?.tools ?? [];
+}
+
 /** A tools/call the way a model's host makes it. */
 async function callTool(name, args) {
   const response = await fetch(SERVER_URL, {
@@ -130,6 +142,17 @@ try {
     listedCommands.ok && braille?.runnable === true && braille.keys === "b" &&
       listedCommands.modes?.sound === true && listedCommands.reader?.inChart === false && listedCommands.pending === 0,
     { toggle_braille: braille, modes: listedCommands.modes, reader: listedCommands.reader, error: listedCommands.error },
+  );
+
+  // The server offers the model maidr's runnable ids as an enum, copied by hand: it must match
+  // what the maidr.js the view loads says it runs, or the model is offered ids maidr refuses.
+  const runTool = (await listTools()).find((t) => t.name === "maidr_run_command");
+  const offered = [...(runTool?.inputSchema?.properties?.command?.enum ?? [])].sort();
+  const runnable = (listedCommands.commands ?? []).filter((c) => c.runnable).map((c) => c.command).sort();
+  check(
+    "maidr_run_command offers the model exactly the commands maidr lists as runnable",
+    runnable.length > 0 && JSON.stringify(offered) === JSON.stringify(runnable),
+    { onlyOffered: offered.filter((c) => !runnable.includes(c)), onlyInMaidr: runnable.filter((c) => !offered.includes(c)) },
   );
 
   const announced = () =>

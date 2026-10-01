@@ -36,8 +36,8 @@ MODEL_TOOLS = (
 )
 
 # The ids maidr's own maidr_run_command offers (the enum of its inputSchema, in its order;
-# maidr's docs/WEBMCP.md lists them). Check this list, and RunnableCommand in server.py, against
-# maidr whenever MAIDR_JS_VERSION is raised.
+# maidr's docs/WEBMCP.md lists them). e2e/run.sh checks RunnableCommand in server.py against
+# the pinned maidr.js; keep this list equal to it.
 MAIDR_RUNNABLE_COMMANDS = [
     "move_left",
     "move_right",
