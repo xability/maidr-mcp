@@ -59,21 +59,40 @@ What the server needs depends on how the host reaches it:
 ### With a public address
 
 ```bash
+# Make a token once, and keep it: it is the <token> in each host's URL below.
+export MAIDR_MCP_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 uvx --from git+https://github.com/xability/maidr-mcp maidr-mcp --host 0.0.0.0 --port 8000
 # or
-docker build -t maidr-mcp . && docker run -p 8000:8000 maidr-mcp
+docker build -t maidr-mcp . && docker run -p 8000:8000 -e MAIDR_MCP_TOKEN maidr-mcp
 ```
 
-The endpoint is `/mcp`, over Streamable HTTP.
+The endpoint is `/mcp`, over Streamable HTTP, and with a token also `/mcp/<token>`.
 - **Run one instance.** The relay keeps each chart's queue in memory.
 - **Restarts are tolerated.** An open chart registers itself again on its next poll after a restart.
 
-**Claude.** Add a custom connector: Customize > Connectors > Add custom connector, with `https://<your-host>/mcp`.
+**Claude.** Add a custom connector: Customize > Connectors > Add custom connector, with `https://<your-host>/mcp/<token>`.
 - **Plans:** custom connectors work on every plan; Free allows one.
 - **Team and Enterprise:** an Owner adds it.
 - **Where charts render:** on web, Desktop, and iOS/Android once the connector is added.
 
-**ChatGPT.** Turn on developer mode, then create an app for `https://<your-host>/mcp`. Developer mode is available on the web for Plus, Pro, Business, Enterprise and Education accounts.
+**ChatGPT.** Turn on developer mode, then create an app for `https://<your-host>/mcp/<token>`. Developer mode is available on the web for Plus, Pro, Business, Enterprise and Education accounts.
+
+### An access token
+
+Without a token, anyone who can reach the server can draw charts. With one, every HTTP request but OPTIONS (CORS preflights, probes) has to carry it, and any other gets `401`. Set it with `MAIDR_MCP_TOKEN`, with `--token-file` or `MAIDR_MCP_TOKEN_FILE` naming a file that holds just the token, or with `--token`. Over STDIO there is none: the host starts the server itself.
+
+A request carries the token one of two ways:
+- **In the URL,** as `/mcp/<token>`. Claude's custom connectors and ChatGPT's developer-mode apps take a URL and nothing else short of OAuth, so this is the form for them.
+- **In a header,** as `Authorization: Bearer <token>` on `/mcp`, for clients that can send one.
+
+`python3 -c 'import secrets; print(secrets.token_urlsafe(32))'` makes a good one. The server refuses a token shorter than 16 characters, or one holding anything but letters, digits and `-._~`.
+
+- **The URL is the secret.** It lives in the host's connector or app settings, and anyone who sees it there can use the server.
+- **Rotate it by restarting** the server with a new token, then give each host the new URL. The old one stops working at once.
+- **It is one shared token, not OAuth.** Everyone given the URL shares it, and it cannot be taken back from one of them alone. Full OAuth is not implemented.
+- **Logs.** The server's access log shows the URL as `/mcp/<redacted>`. A proxy, load balancer or platform in front of the server may log the full URL; use the header where the client can send one.
+- **`--token` shows in the process list** to other users of the machine. Prefer the variable, or a file: with Docker secrets, `-e MAIDR_MCP_TOKEN_FILE=/run/secrets/<name>`.
+- **Serve it over HTTPS.** Over plain HTTP the token crosses the network in the clear.
 
 ### ChatGPT without a public address
 
@@ -105,6 +124,8 @@ cd e2e && npm install && npx playwright-core install chromium && cd ..
 bash e2e/run.sh
 ```
 
+With `MAIDR_MCP_TOKEN` set, it runs the server behind that token, and the host reaches it at `/mcp/<token>`.
+
 It checks:
 - the chart appears;
 - the model's calls are answered by maidr inside the chart;
@@ -120,12 +141,12 @@ It checks:
 - **Moves wait until the reader is in the chart.** maidr never moves focus. A move made while the reader is typing to the model is kept, and announced when they Tab back into the chart. `maidr_navigate` says so (`applied: "on-next-focus"`), and the model should tell them.
 - **Each `show_chart` call still adds a chart.** Claude mounts a new view for every call to a tool with a UI, and keeps the earlier ones. A chart that changes stays in its view only when the model calls `update_chart`, as the server's instructions ask; a second `show_chart` is a second view.
 - **The relay keeps a request open.** The view's poll holds a request for up to 20 seconds. Whether a given host limits calls made from a view is not yet known.
-- **There is no authentication.** Anyone with the server's URL can draw charts. A chart can only be read or driven with its `viewId`, a random 24-character token.
+- **Access is one shared token, and only if you set one.** Without a token, anyone with the server's URL can draw charts. Set `MAIDR_MCP_TOKEN` and every request needs it; Claude and ChatGPT carry it in the URL. That URL, kept in the host's connector settings, is then the secret; rotating it means restarting the server with a new token and updating each host. Full OAuth is not implemented. See [An access token](#an-access-token). A chart can only be read or driven with its `viewId`, a random 24-character token.
 - **Six chart families so far.** The server does not take plotting code.
 
 ## Network and data
 
-- **The server:** receives the data the model sends to draw a chart. It keeps the chart's latest SVG in memory until the chart has gone 15 minutes without polling, and logs nothing about the data beyond the HTTP access log.
+- **The server:** receives the data the model sends to draw a chart. It keeps the chart's latest SVG in memory until the chart has gone 15 minutes without polling, and logs nothing about the data beyond the HTTP access log, which shows a token in the URL as `/mcp/<redacted>`.
 - **The chart view:** loads maidr.js and the MCP Apps SDK from `cdn.jsdelivr.net`. maidr's own AI chat inside the chart works as it does anywhere else, with a key the reader adds.
 
 ## Development
