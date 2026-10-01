@@ -19,7 +19,9 @@
 // The chart view of maidr-mcp. It shows the SVG show_chart drew, loads maidr.js, and runs
 // the calls the server relays from the model on maidr's own WebMCP tools. It swaps in the
 // chart update_chart draws, in place. It also tells the model, through
-// ui/update-model-context, where the reader is, for the model's next turn.
+// ui/update-model-context, where the reader is, for the model's next turn, and tells the
+// reader, in its status line, when the chart changed and when a move or command of the
+// model's waits for them.
 import { App } from "{{EXT_APPS_JS}}";
 
 const MAIDR_JS = "{{MAIDR_JS}}";
@@ -28,10 +30,11 @@ const chart = document.getElementById("chart");
 const status = document.getElementById("status");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// maidr.js registers maidr_list_charts, maidr_get_layer_data and maidr_navigate on
-// document.modelContext. No host hands a view's tools to the model yet, so the view
-// supplies document.modelContext itself and keeps the tools for the relay. When the reader
-// turns agent access off in maidr's settings, maidr aborts the registration and the tools go.
+// maidr.js registers its tools (maidr_list_charts, maidr_get_layer_data, maidr_navigate,
+// maidr_list_commands, maidr_run_command) on document.modelContext. No host hands a view's
+// tools to the model yet, so the view supplies document.modelContext itself and keeps the tools
+// for the relay. When the reader turns agent access off in maidr's settings, maidr aborts the
+// registration and the tools go.
 const tools = new Map();
 Object.defineProperty(document, "modelContext", {
   configurable: true,
@@ -48,6 +51,7 @@ Object.defineProperty(document, "modelContext", {
 
 const app = new App({ name: "maidr chart", version: "1" });
 let viewId;
+let ready = false; // maidr.js loaded: until then the status line says it is loading, or why not
 let revision = 0; // the server's revision of the chart shown; show_chart's is 0
 // Aborted when the host tears the view down: the relay stops, and a poll in flight is cancelled.
 const stop = new AbortController();
@@ -77,7 +81,8 @@ async function show(svg) {
   const script = document.createElement("script");
   script.src = MAIDR_JS;
   script.onload = () => {
-    status.textContent = "";
+    ready = true;
+    showStatus();
     void relay();
   };
   script.onerror = () => {
@@ -88,6 +93,9 @@ async function show(svg) {
 
 async function run(call) {
   const tool = tools.get(call.tool);
+  if (!tool && tools.size) {
+    return { ok: false, error: `the maidr.js this chart loads has no ${call.tool} tool` };
+  }
   if (!tool) {
     return {
       ok: false,
@@ -106,8 +114,9 @@ async function run(call) {
 // maidr lets go of the old chart (maidr:unbindchart unmounts it and drops it from its tools)
 // and binds the new one as it enters the page. A reader who was in the chart is put back in
 // it, on the new chart, since the old one took their focus with it; anyone else keeps theirs.
-// Either way the status line says the chart changed. The poll that finds the view behind
-// brings the chart, {svg, revision}; when one does not, the view fetches it.
+// Either way the status line says the chart changed. What waited for the reader in the old
+// chart, a move and commands, goes with it. The poll that finds the view behind brings the
+// chart, {svg, revision}; when one does not, the view fetches it.
 async function update(brought) {
   const fetched =
     brought ??
@@ -117,15 +126,22 @@ async function update(brought) {
   if (typeof svg !== "string" || typeof latest !== "number") {
     return { ok: false, error: "the chart view could not fetch the new chart" };
   }
-  const readerInChart = document.hasFocus() && chart.contains(document.activeElement);
-  if (latest === revision) return { ok: true, readerInChart }; // an earlier call brought it
+  const inChart = readerInChart();
+  if (latest === revision) return { ok: true, readerInChart: inChart }; // an earlier call brought it
 
+  // What the model left waiting for the reader in the old chart goes with it. Both hear so: the
+  // reader may have been told it would happen when they Tab in.
+  const dropped = moveWaiting || (await commandsWaiting()) > 0;
   const hadTools = tools.has("maidr_list_charts");
   const old = chart.querySelector("svg[maidr]");
   if (old) document.dispatchEvent(new CustomEvent("maidr:unbindchart", { detail: old }));
   chart.innerHTML = svg;
   revision = latest;
   lastPosition = null; // it named a point of the old chart
+  // maidr kept the waiting move and commands on the old chart, and unmounting it dropped them.
+  moveWaiting = false;
+  waiting = "";
+  showStatus();
   void app
     .updateModelContext({
       content: [{ type: "text", text: `maidr chart ${viewId} now shows the chart update_chart drew; the reader is on none of its points yet.` }],
@@ -139,15 +155,20 @@ async function update(brought) {
   } catch {}
   const target = data && (await bound(plot, data.id, hadTools));
   if (!target) {
-    status.textContent = "The chart changed, but maidr could not make the new one accessible.";
+    updated = "The chart changed, but maidr could not make the new one accessible.";
+    showStatus();
     return { ok: false, error: "maidr did not take up the new chart" };
   }
   // Only into focus that went nowhere: a reader who has since moved on keeps their place.
   const lost = document.activeElement === null || document.activeElement === document.body;
-  if (readerInChart && document.hasFocus() && lost) target.focus();
+  if (inChart && document.hasFocus() && lost) target.focus();
+  // After the focus, whose focusin clears the status line for a reader entering the chart.
   const title = data.title ?? data.subplots?.[0]?.[0]?.layers?.[0]?.title;
-  status.textContent = typeof title === "string" && title ? `Chart updated: ${title}` : "Chart updated.";
-  return { ok: true, readerInChart };
+  updated = typeof title === "string" && title ? `Chart updated: ${title}` : "Chart updated.";
+  if (dropped) updated = `${updated.replace(/\.?$/, ".")} What the assistant had waiting for you went with the old chart.`;
+  showStatus();
+  refreshNotice(); // a catch-up has no batch after it to refresh the notice
+  return { ok: true, readerInChart: inChart, dropped };
 }
 
 // The element the reader Tabs to, once maidr has bound the new plot and, while its agent tools
@@ -239,11 +260,19 @@ async function relay() {
     }
     for (const call of calls) {
       const result = call.tool === UPDATE ? await update(brought) : await run(call);
+      // maidr keeps one move, the latest: a move it made at once leaves none waiting, and one it
+      // refused leaves the kept one as it was.
+      if (call.tool === "maidr_navigate" && result?.ok === true) {
+        moveWaiting = result.applied === "on-next-focus";
+      }
       await app
         .callServerTool({ name: "maidr_view_reply", arguments: { viewId, callId: call.callId, result } })
         .catch(() => {});
     }
-    if (calls.length) refreshPosition();
+    if (calls.length) {
+      refreshPosition();
+      refreshNotice();
+    }
   }
 }
 
@@ -286,10 +315,96 @@ function pause(ms) {
   });
 }
 
+// The status line, once maidr.js is ready, says two things a screen reader browsing the
+// conversation should find there: that update_chart changed the chart, and what of the model's
+// waits for the reader. They are kept apart, so that refreshing the one never wipes the other
+// before it has been read, and the line says both, the change first. Both go when the reader
+// enters the chart, where maidr speaks for itself; the line is then empty, which a screen reader
+// does not read out over maidr's announcements. Until maidr.js is ready the line says it is
+// loading, or why it is not.
+let updated = ""; // "Chart updated: <title>", or that the new chart could not be made accessible
+let waiting = ""; // the waiting notice
+function showStatus() {
+  if (!ready) return;
+  const text = updated && waiting ? `${/[.!?…]$/.test(updated) ? updated : `${updated}.`} ${waiting}` : updated || waiting;
+  if (status.textContent !== text) status.textContent = text;
+}
+
+// maidr never moves the reader's focus, and the view moves it only to put a reader back in the
+// chart update_chart swapped (see update()). So a move or command the model makes while the
+// reader is outside the chart waits for them (maidr answers applied "on-next-focus") and happens
+// when they enter it. Until then the status line says so. maidr counts the waiting commands; it
+// keeps one waiting move, which it makes as soon as the reader enters the chart.
+let moveWaiting = false;
+let watchingKept = false;
+let noticing;
+function readerInChart() {
+  return document.hasFocus() && chart.contains(document.activeElement);
+}
+async function commandsWaiting() {
+  const listed = await run({ tool: "maidr_list_commands" });
+  return listed?.ok === true && Number.isInteger(listed.pending) ? listed.pending : 0;
+}
+function refreshNotice() {
+  clearTimeout(noticing);
+  noticing = setTimeout(async () => {
+    if (!ready) return;
+    const shown = revision;
+    const commands = readerInChart() ? 0 : await commandsWaiting();
+    // Read again after the await: the reader may have entered the chart meanwhile, or
+    // update_chart swapped it, which drops what waited and refreshes the notice itself.
+    if (revision !== shown) return;
+    waiting = readerInChart() ? "" : waitingNotice(moveWaiting, commands);
+    showStatus();
+  }, 300);
+}
+function waitingNotice(move, commands) {
+  const things = [];
+  if (move) things.push("a move");
+  if (commands === 1) things.push("a command");
+  if (commands > 1) things.push(`${commands} commands`);
+  if (!things.length) return "";
+  const them = things.length > 1 || commands > 1 ? "them" : "it";
+  return `The assistant has ${things.join(" and ")} waiting for you: Tab into the chart to hear ${them}.`;
+}
+document.addEventListener(
+  "focusin",
+  async (event) => {
+    refreshNotice();
+    if (!ready || !chart.contains(event.target)) return;
+    // Only an entry from outside: focus moving within the chart (maidr's braille field, a
+    // dialog handing focus back) must not wipe what update_chart has just said.
+    if (chart.contains(event.relatedTarget)) return;
+    // In the chart, maidr speaks for itself: the status line has said its piece. update_chart
+    // putting a reader back in says the change once their focus is in.
+    updated = "";
+    waiting = "";
+    showStatus();
+    moveWaiting = false; // maidr makes it on this focus-in,
+    // then runs the waiting commands, one every 500 ms. Read the position again once maidr
+    // counts none left (at most 8, so a few seconds), or the reader has left the chart. One
+    // watch at a time: moving between controls inside the chart fires focusin again.
+    if (watchingKept) return;
+    watchingKept = true;
+    try {
+      for (let i = 0; i < 12 && readerInChart() && (await commandsWaiting()) > 0; i++) {
+        await sleep(500);
+      }
+    } finally {
+      watchingKept = false;
+    }
+    refreshPosition();
+  },
+  true,
+);
+document.addEventListener("focusout", refreshNotice, true);
+window.addEventListener("blur", refreshNotice);
+
 // The reader's position goes to the model for its next turn, so a question such as
-// "what is this point?" needs no tool call. It is read again after anything that can move
-// the reader: their keys, their entering the chart (where a move kept for them lands), and
-// the model's own calls.
+// "what is this point?" needs no tool call (within a turn, the model reads it live with
+// maidr_list_charts). It is read again after anything that can move the reader: their keys,
+// their entering the chart (where a move kept for them lands, and the commands kept for them
+// run), and the model's own calls.
 let lastPosition = null;
 let pending;
 function refreshPosition() {

@@ -1,22 +1,39 @@
 // End-to-end check in ext-apps' reference host (basic-host): the chart is shown
 // through the host, a "model" calls the server's maidr_* tools over HTTP, and a
-// reader enters the chart and moves with the arrow keys. Then update_chart changes
-// the chart in its own view, with the reader outside it and inside it, and a view
-// that missed an update catches up. Then each other chart family is shown the same
-// way, in a page of its own, read by maidr, and moved through; this comes after the
-// bar chart's checks, which count that page's views and follow the reader's focus in
-// it. Last, a host made to cut the view's poll after a few seconds, in a context of
-// its own, checks that the view falls back to short polls and still answers,
-// update_chart included; last, so that no other chart is open while it times the
-// polls. Exits non-zero on failure.
+// reader enters the chart and moves with the arrow keys. Exits non-zero on failure.
 //
-//   HOST_URL     the reference host        (default http://localhost:8080)
-//   SERVER_URL   maidr-mcp's MCP endpoint  (default http://localhost:3001/mcp)
-//   CHROMIUM     a Chromium binary to use instead of Playwright's own
+// The checks run in this order, so that each finds the reader's focus, and the number of
+// views, as it expects:
+// 1. The bar chart, in the host's first page. show_chart leaves the reader in the host page,
+//    in the chat, so the model's calls come first: the read-only ones, maidr_list_commands
+//    and maidr_run_command's ids against maidr's, then a move and a command that wait for
+//    the reader, which the chart's status line names. Then the reader Tabs in, where the move
+//    lands and the command runs, and moves with the arrow keys; then the model's jump, move
+//    and command while they are in the chart. Opening the host's model-context panel ends
+//    this, and takes the reader out of the chart.
+// 2. update_chart, in that same view. With the reader outside: what the model left waiting in
+//    the old chart goes with it, and a move the model then makes in the new one joins the
+//    change in the status line. The reader Tabs in, and the model updates the chart with them
+//    in it; then a view that missed an update catches up. These count the page's views and
+//    follow the reader's focus in it, so they come before any other chart opens.
+// 3. Each other chart family, in a page of its own, read by maidr and moved through.
+// 4. Last, in a context of its own, a host made to cut the view's poll after a few seconds:
+//    the view falls back to short polls and still answers, update_chart included. Last, so
+//    that no other chart is open while it times the polls.
+//
+//   HOST_URL       the reference host        (default http://localhost:8080)
+//   SERVER_URL     maidr-mcp's MCP endpoint  (default http://localhost:3001/mcp)
+//   CHROMIUM       a Chromium binary to use instead of Playwright's own
+//   MAIDR_JS_FILE  a local maidr.js build the view loads in place of the pinned release
+import { readFile } from "node:fs/promises";
 import { chromium } from "playwright-core";
 
 const HOST_URL = process.env.HOST_URL ?? "http://localhost:8080";
 const SERVER_URL = process.env.SERVER_URL ?? "http://localhost:3001/mcp";
+const MAIDR_JS_FILE = process.env.MAIDR_JS_FILE || undefined;
+// Read up front, so a wrong path fails here rather than as a chart that never loads maidr.
+const LOCAL_MAIDR_JS = MAIDR_JS_FILE ? await readFile(MAIDR_JS_FILE) : undefined;
+const MAIDR_JS_URL = /^https:\/\/cdn\.jsdelivr\.net\/npm\/maidr@[^/]+\/dist\/maidr\.js$/;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const failures = [];
@@ -25,27 +42,51 @@ function check(step, ok, detail) {
   if (!ok) failures.push(step);
 }
 
-/** A tools/call the way a model's host makes it: the whole result. */
-async function callToolResult(name, args) {
+/** A JSON-RPC request to the server the way a model's host sends it: the result. */
+async function request(method, params) {
   const response = await fetch(SERVER_URL, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
   const body = await response.text();
   const line = body.split("\n").find((l) => l.startsWith("data: "));
   return JSON.parse(line ? line.slice(6) : body).result;
 }
 
-/** A tools/call's structured result. */
-async function callTool(name, args) {
-  return (await callToolResult(name, args)).structuredContent;
+/** The server's tool list, as a model's host reads it. */
+async function listTools() {
+  return (await request("tools/list", {}))?.tools ?? [];
 }
 
-/** A browser context that fetches the CDN through Node, which follows this machine's proxy settings. */
+/** A tools/call the way a model's host makes it: the whole result. */
+async function callToolResult(name, args) {
+  return request("tools/call", { name, arguments: args });
+}
+
+/** A tools/call's structured result. */
+async function callTool(name, args) {
+  return (await callToolResult(name, args))?.structuredContent ?? {};
+}
+
+/**
+ * A browser context that fetches the CDN through Node, which follows this machine's proxy
+ * settings, or serves maidr.js from MAIDR_JS_FILE when it is set. Every context the driver
+ * opens comes from here, so every chart loads the same maidr.js.
+ */
+let localMaidrServed = 0;
 async function newContext(browser) {
   const context = await browser.newContext();
   await context.route("https://cdn.jsdelivr.net/**", async (route) => {
+    if (LOCAL_MAIDR_JS && MAIDR_JS_URL.test(route.request().url())) {
+      localMaidrServed++;
+      await route.fulfill({
+        status: 200,
+        headers: { "content-type": "text/javascript; charset=utf-8" },
+        body: LOCAL_MAIDR_JS,
+      });
+      return;
+    }
     const r = await fetch(route.request().url());
     await route.fulfill({
       status: r.status,
@@ -138,7 +179,7 @@ const chart = {
 
 // The other families, each with the layers maidr should read, what the reader's first ArrowRight
 // announces and, where maidr gives the first layer's points a target, what a model's move to its
-// last point announces. maidr 4.11.0 gives
+// last point announces. maidr 4.12.0 gives
 // no targets for pie, violin, candlestick or trend-line points: the reader moves through them,
 // and the model reads them but cannot move the reader there.
 const families = [
@@ -230,6 +271,31 @@ try {
   const { view, viewId } = await showChart(page, chart);
   check("the host shows the chart view", !!view);
   if (!view) throw new Error("no chart view");
+  if (MAIDR_JS_FILE) check(`the view loads maidr.js from ${MAIDR_JS_FILE}`, localMaidrServed > 0);
+
+  // Everything maidr's live regions say, in order: an announcement can replace the one before
+  // it before a check reads it, as a kept command's does the point the reader landed on.
+  await view.evaluate(() => {
+    const read = () =>
+      [...document.querySelectorAll("[role=alert],[aria-live]")].map((e) => e.textContent.trim()).filter(Boolean).join(" | ");
+    window.__heard = [];
+    new MutationObserver(() => {
+      const now = read();
+      if (now && now !== window.__heard.at(-1)) window.__heard.push(now);
+    }).observe(document.body, { subtree: true, childList: true, characterData: true });
+  });
+  const heard = () => view.evaluate(() => window.__heard.slice());
+  // The view's own status line, which says when the chart changed and when a move or command
+  // waits for the reader.
+  const notice = () => view.evaluate(() => document.getElementById("status").textContent);
+  // Polled on a timer: a view the host has scrolled out of sight gets no animation frames.
+  const noticeComes = (pattern) =>
+    view
+      .waitForFunction((source) => new RegExp(source).test(document.getElementById("status").textContent), pattern.source, {
+        timeout: 3000,
+        polling: 100,
+      })
+      .then(() => true, () => false);
 
   const listed = await listCharts(viewId);
   const layer = listed.content?.charts?.[0]?.layers?.[0];
@@ -239,29 +305,110 @@ try {
   const points = data.content?.points ?? [];
   check("maidr_get_layer_data returns the points with targets", points.length === 4 && points.every((p) => p.target), points.map((p) => p.point));
 
+  const listedCommands = await callTool("maidr_list_commands", { viewId });
+  const braille = listedCommands.commands?.find((c) => c.command === "toggle_braille");
+  check(
+    "maidr_list_commands answers from maidr in the view, with the reader's keys and modes",
+    listedCommands.ok && braille?.runnable === true && braille.keys === "b" &&
+      listedCommands.modes?.sound === true && listedCommands.reader?.inChart === false && listedCommands.pending === 0,
+    { toggle_braille: braille, modes: listedCommands.modes, reader: listedCommands.reader, error: listedCommands.error },
+  );
+
+  // The server offers the model maidr's runnable ids as an enum, copied by hand: it must match
+  // what the maidr.js the view loads says it runs, or the model is offered ids maidr refuses.
+  const runTool = (await listTools()).find((t) => t.name === "maidr_run_command");
+  const offered = [...(runTool?.inputSchema?.properties?.command?.enum ?? [])].sort();
+  const runnable = (listedCommands.commands ?? []).filter((c) => c.runnable).map((c) => c.command).sort();
+  check(
+    "maidr_run_command offers the model exactly the commands maidr lists as runnable",
+    runnable.length > 0 && JSON.stringify(offered) === JSON.stringify(runnable),
+    { onlyOffered: offered.filter((c) => !runnable.includes(c)), onlyInMaidr: runnable.filter((c) => !offered.includes(c)) },
+  );
+
   const top = points.reduce((a, b) => (b.point.y > a.point.y ? b : a));
   const low = points.reduce((a, b) => (b.point.y < a.point.y ? b : a));
 
   const away = await callTool("maidr_navigate", { viewId, layerId: layer.layerId, ...top.target });
   check("a move while the reader is in the chat waits for them", away.ok && away.applied === "on-next-focus", away.applied);
   check("  and nothing is announced yet", (await announced(view)) === "", await announced(view));
+  check(
+    "  and the chart's status line tells the reader it waits",
+    await noticeComes(/^The assistant has a move waiting for you: Tab into the chart to hear it\.$/),
+    await notice(),
+  );
 
+  const keptCommand = await callTool("maidr_run_command", { viewId, command: "toggle_sound" });
+  check("a command while the reader is in the chat waits for them", keptCommand.ok && keptCommand.applied === "on-next-focus", keptCommand);
+  const counted = await callTool("maidr_list_commands", { viewId });
+  check("  and maidr counts it, and the status line names the move and the command", counted.pending === 1 &&
+    (await noticeComes(/^The assistant has a move and a command waiting for you: Tab into the chart to hear them\.$/)), {
+    pending: counted.pending,
+    notice: await notice(),
+  });
+
+  const before = (await heard()).length;
   await tabInto(page, view);
-  const entered = await announced(view);
-  check("the reader Tabs in and lands on the highest bar", /Sat/.test(entered) && /87/.test(entered), entered);
+  const landed = (await heard()).slice(before);
+  const landing = landed.findIndex((t) => /Sat/.test(t) && /87/.test(t));
+  check("the reader Tabs in and lands on the highest bar", landing >= 0, landed);
+
+  // maidr runs the kept command 500 ms after the reader enters, behind the move's announcement.
+  let afterKept;
+  for (let i = 0; i < 20; i++) {
+    afterKept = await callTool("maidr_list_commands", { viewId });
+    if (afterKept.modes?.sound === false) break;
+    await sleep(200);
+  }
+  const sinceLanding = (await heard()).slice(before + Math.max(landing, 0) + 1);
+  check(
+    "  then the kept command runs: sound goes off, and the reader hears so",
+    afterKept.ok && afterKept.modes?.sound === false && afterKept.pending === 0 && afterKept.reader?.inChart === true &&
+      sinceLanding.some((t) => /sound is off/i.test(t)),
+    { modes: afterKept.modes, pending: afterKept.pending, reader: afterKept.reader, heard: sinceLanding },
+  );
+  check("  and the status line's notice is gone", (await notice()) === "", await notice());
 
   await page.keyboard.press("ArrowRight");
   await sleep(900);
   const moved = await announced(view);
   check("ArrowRight announces the next bar", /Sun/.test(moved) && /76/.test(moved), moved);
 
+  // Where a command takes the reader, the model only learns from the host's model context on
+  // its next turn; within this one, maidr_list_charts reads it live.
+  const jumpAt = (await heard()).length;
+  const jumped = await callTool("maidr_run_command", { viewId, command: "go_to_max_value" });
+  await sleep(600);
+  const jumpHeard = (await heard()).slice(jumpAt);
+  check(
+    "a jump the model runs while the reader is in the chart lands at once: go_to_max_value, on the highest bar",
+    jumped.ok && jumped.applied === "now" && jumpHeard.some((t) => /Sat/.test(t) && /87/.test(t)),
+    { applied: jumped.applied, heard: jumpHeard, error: jumped.error },
+  );
+  const live = (await callTool("maidr_list_charts", { viewId })).content?.charts?.[0]?.reader;
+  check(
+    "  and maidr_list_charts gives the model the reader's new position within the turn",
+    live?.inChart === true && /Sat/.test(live.position) && /87/.test(live.position),
+    live,
+  );
+
   const here = await callTool("maidr_navigate", { viewId, layerId: layer.layerId, ...low.target });
   await sleep(400);
   const now = await announced(view);
   check("a move while the reader is in the chart is announced at once", here.applied === "now" && /Fri/.test(now) && /19/.test(now), { applied: here.applied, now });
 
-  // Last, because opening the panel takes focus out of the chart. The host shows the model
-  // context collapsed to 100 characters; open it to read it all.
+  const ranAt = (await heard()).length;
+  const ran = await callTool("maidr_run_command", { viewId, command: "toggle_sound" });
+  await sleep(400);
+  const ranHeard = (await heard()).slice(ranAt);
+  check(
+    "a command while the reader is in the chart applies at once: sound comes back on",
+    ran.ok && ran.applied === "now" && ran.modes?.sound === true && ranHeard.some((t) => /sound is on/i.test(t)),
+    { applied: ran.applied, modes: ran.modes, heard: ranHeard, error: ran.error },
+  );
+  check("  and the status line stays empty", (await notice()) === "", await notice());
+
+  // Last of this part, because opening the panel takes focus out of the chart. The host shows
+  // the model context collapsed to 100 characters; open it to read it all.
   await page.getByText("📋 Model Context").first().click();
   const context_ = await page.evaluate(
     () => [...document.querySelectorAll("div")].map((d) => d.textContent).find((t) => t.startsWith("📋 Model Context")) ?? "",
@@ -306,6 +453,13 @@ try {
     categories: ["Lunch", "Dinner"],
     series: [{ values: [68, 176] }],
   };
+  // A move and a command left waiting in the chart the update replaces: maidr drops them with
+  // it, and the status line must stop naming them.
+  const keptMove = await callTool("maidr_navigate", { viewId, layerId: layer.layerId, ...top.target });
+  const keptRun = await callTool("maidr_run_command", { viewId, command: "toggle_sound" });
+  const keptBefore =
+    keptMove.applied === "on-next-focus" && keptRun.applied === "on-next-focus" &&
+    (await noticeComes(/^The assistant has a move and a command waiting for you: Tab into the chart to hear them\.$/));
   await page.selectOption("select >> nth=1", "update_chart");
   await page.fill("textarea", JSON.stringify({ viewId, chart: byTime }));
   await page.click("button[type=submit]");
@@ -322,8 +476,17 @@ try {
   const resultText = await page.evaluate(() => document.body.textContent);
   check(
     "  the reader outside the chart keeps their focus, and the chart's status says it changed",
-    focusKept && !outside.hasFocus && /"readerInChart": false/.test(resultText) && outside.status === "Chart updated: Tips by Time",
+    focusKept && !outside.hasFocus && /"readerInChart": false/.test(resultText) && /"droppedWaiting": true/.test(resultText) &&
+      outside.status === "Chart updated: Tips by Time. What the assistant had waiting for you went with the old chart.",
     { focusKept, viewHasFocus: outside.hasFocus, status: outside.status },
+  );
+  await sleep(1_000); // past the status line's refresh after the update
+  const dropped = await callTool("maidr_list_commands", { viewId });
+  const afterDrop = await notice();
+  check(
+    "  and what waited in the old chart goes with it: maidr counts no command, and the status line says it went",
+    keptBefore && dropped.ok && dropped.pending === 0 && afterDrop === "Chart updated: Tips by Time. What the assistant had waiting for you went with the old chart.",
+    { keptBefore, pending: dropped.pending, status: afterDrop },
   );
   const second = await onlyChart();
   check(
@@ -332,7 +495,28 @@ try {
     second,
   );
 
+  // A move the model makes in the new chart, still with the reader outside: the status line
+  // names it after the change it already announces, and does not drop that announcement.
+  const newPoints = (await callTool("maidr_get_layer_data", { viewId, layerId: second.layer?.layerId })).content?.points ?? [];
+  const lunch = newPoints.find((p) => p.point?.x === "Lunch") ?? newPoints[0];
+  const keptNew = await callTool("maidr_navigate", { viewId, layerId: second.layer?.layerId, ...lunch?.target });
+  check(
+    "a move the model makes in the new chart while the reader is outside joins the change in the status line",
+    keptNew.applied === "on-next-focus" &&
+      (await noticeComes(/^Chart updated: Tips by Time\. What the assistant had waiting for you went with the old chart\. The assistant has a move waiting for you: Tab into the chart to hear it\.$/)),
+    { applied: keptNew.applied ?? keptNew.error, status: await notice() },
+  );
+
+  const enteredAt = (await heard()).length;
   await tabInto(page, view);
+  await sleep(700); // past the 500 ms after which maidr would run a kept command
+  const enteredNew = (await heard()).slice(enteredAt);
+  const modesIn = (await callTool("maidr_list_commands", { viewId })).modes;
+  check(
+    "  the reader Tabs in: that move lands, the command dropped with the old chart does not run, and the status line empties",
+    enteredNew.some((t) => /Lunch/.test(t) && /68/.test(t)) && modesIn?.sound === true && (await notice()) === "",
+    { heard: enteredNew, sound: modesIn?.sound, status: await notice() },
+  );
   await page.keyboard.press("ArrowRight");
   await sleep(900);
   const inNew = await announced(view);
@@ -514,7 +698,8 @@ try {
   const carried = polls.filter((p) => p.carried);
   check(
     "  a short poll carries update_chart, and the chart changes inside the reply window",
-    cutUpdated?.readerInChart === false && cutStatus === "Chart updated: Tips by Time" && carried.at(-1)?.wait === 0,
+    cutUpdated?.readerInChart === false && cutUpdated?.droppedWaiting === true &&
+      cutStatus === "Chart updated: Tips by Time. What the assistant had waiting for you went with the old chart." && carried.at(-1)?.wait === 0,
     { ms: Date.now() - updateAsked, readerInChart: cutUpdated?.readerInChart, status: cutStatus, wait: carried.at(-1)?.wait },
   );
 
