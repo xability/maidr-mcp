@@ -681,17 +681,30 @@ def test_every_action_is_pinned_to_a_commit():
         assert re.fullmatch(r" # v\d+\.\d+\.\d+", comment), action
 
 
+def job_conditions() -> dict[str, list[str]]:
+    # Each job of the workflow, with its own `if:` conditions, read as YAML reads them. Any line
+    # at two spaces but a comment opens a job, whatever its id (release.yml's `mcp-registry` has a
+    # hyphen) and whatever follows the colon, so that no job is folded into the one above it
+    # unchecked. A condition goes on over the blank and more-indented lines after it, as a
+    # wrapped one would, and its line breaks and indents read as single spaces.
+    text = WORKFLOW.read_text(encoding="utf-8").split("\njobs:\n")[1]
+    jobs = re.split(r"^  ([^\s#][^:\n]*):.*\n", text, flags=re.MULTILINE)
+    condition = re.compile(r"^    if:(.*(?:\n(?: {5}.*| *(?=\n)))*)", re.MULTILINE)
+    return {
+        name: [" ".join(found.split()) for found in condition.findall(body)]
+        for name, body in zip(jobs[1::2], jobs[2::2], strict=True)
+    }
+
+
 def test_every_job_runs_from_main_only():
     # `land` can push to main and `report` can write issues, and both run scripts/update_maidr.py,
     # so a run by hand from another branch must run neither. Each job tests the ref itself, rather
     # than counting on `check` being skipped, and over the whole of its condition, since
     # `a && b || c` is `(a && b) || c`.
     guard = "github.ref == 'refs/heads/main'"
-    text = WORKFLOW.read_text(encoding="utf-8").split("\njobs:\n")[1]
-    jobs = re.split(r"^  (\w+):\n", text, flags=re.MULTILINE)
-    assert jobs[1::2] == ["check", "land", "report"]
-    for name, body in zip(jobs[1::2], jobs[2::2], strict=True):
-        conditions = re.findall(r"^    if: (.+)$", body, re.MULTILINE)
+    jobs = job_conditions()
+    assert jobs.keys() >= {"check", "land", "report"}
+    for name, conditions in jobs.items():
         assert len(conditions) == 1, name
         condition = conditions[0]
         assert condition == guard or condition.startswith(f"{guard} && "), name
