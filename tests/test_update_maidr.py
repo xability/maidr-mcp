@@ -398,7 +398,7 @@ def test_the_commit_message_names_what_changed():
     both = um.Update(JS_PIN, JS_NEXT, PY_LOCKED, PY_NEXT, "d", [("lxml", "5.3.0", "5.4.0")])
     message = um.commit_message(both, "https://github.com/xability/maidr-mcp/actions/runs/1")
     subject, *body = message.splitlines()
-    assert subject == f"chore: load maidr.js {JS_NEXT} and py-maidr {PY_NEXT}"
+    assert subject == f"fix(deps): load maidr.js {JS_NEXT} and py-maidr {PY_NEXT}"
     text = " ".join(body)
     assert f"maidr.js {JS_PIN} -> {JS_NEXT}" in text
     assert f"py-maidr {PY_LOCKED} -> {PY_NEXT}" in text
@@ -407,9 +407,9 @@ def test_the_commit_message_names_what_changed():
     assert all(len(line) <= 72 or "https://" in line for line in body)
 
     only_js = um.Update(JS_PIN, JS_NEXT, PY_LOCKED, PY_LOCKED, "d")
-    assert um.commit_message(only_js).splitlines()[0] == f"chore: load maidr.js {JS_NEXT}"
+    assert um.commit_message(only_js).splitlines()[0] == f"fix(deps): load maidr.js {JS_NEXT}"
     only_py = um.Update(JS_PIN, JS_PIN, PY_LOCKED, PY_NEXT, "d")
-    assert um.commit_message(only_py).splitlines()[0] == f"chore: load py-maidr {PY_NEXT}"
+    assert um.commit_message(only_py).splitlines()[0] == f"fix(deps): load py-maidr {PY_NEXT}"
     with pytest.raises(ValueError):
         um.commit_message(um.Update(JS_PIN, JS_PIN, PY_LOCKED, PY_LOCKED, "d"))
 

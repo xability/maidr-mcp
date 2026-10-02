@@ -38,4 +38,4 @@ scripts/          # update_maidr.py: raises the two maidr pins, for update-maidr
 
 ## Git
 
-Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `ci:`, `chore:`), imperative mood, lower case. One logical change per commit. Work on a branch; `main` takes pull requests, and the `chore:` commits `update-maidr.yml` pushes once its checks pass.
+Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `ci:`, `chore:`), imperative mood, lower case. One logical change per commit. Work on a branch; `main` takes pull requests, and the `fix(deps):` commits `update-maidr.yml` pushes once its checks pass.

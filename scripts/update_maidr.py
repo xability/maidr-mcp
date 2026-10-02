@@ -387,7 +387,7 @@ def commit_message(change: Update, run_url: str = "") -> str:
     paragraphs = [
         textwrap.fill(p, width=72, break_long_words=False, break_on_hyphens=False) for p in body
     ]
-    return "\n\n".join([f"chore: load {' and '.join(named)}", *paragraphs]) + "\n"
+    return "\n\n".join([f"fix(deps): load {' and '.join(named)}", *paragraphs]) + "\n"
 
 
 REPRODUCE = (
