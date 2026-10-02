@@ -17,9 +17,9 @@ name: update-maidr
 # - `check` writes it and runs ci.yml's checks against it, with a read-only token;
 # - `land` writes it again, with this repository's script alone, and commits and pushes it if the
 #   files come out the same;
-# - `report` opens an issue when either fails, or comments on the open one for the same versions,
-#   and closes the issues a run settles: about versions no newer than it pushed, or about a run
-#   that could not choose the versions, once one has.
+# - `report` opens an issue when either fails, or brings the open one for the same versions up to
+#   date, and closes the issues a run settles: about versions no newer than it pushed, or about a
+#   run that could not choose the versions, once one has.
 #
 # The checks run code nobody here has read: the new py-maidr and what it pulls in, and the npm
 # packages of ext-apps' reference host, which the e2e installs without a lockfile, so afresh on
@@ -28,11 +28,17 @@ name: update-maidr
 # every job here. On, `check` would save the uv cache under the key `land` restores, and ci.yml's
 # runs after it, so `land` would lock from package metadata that `check`'s code could rewrite.
 #
-# While an issue for some versions is open, the hourly run leaves those versions alone, so a
-# failure is reported once rather than every hour: close the issue to let it try again, or run
-# this workflow by hand, which tries at once and takes a maidr.js version, lower than the pin
-# too. The next hourly run raises a lower pin again, however it was set, so holding an older
-# maidr.js means disabling this workflow until maidr releases a fix.
+# A failure that trying the same versions again would only repeat (their provenance, ruff,
+# pytest, e2e/run.sh failing twice, or a push GitHub refused) holds them: while its issue is open,
+# the hourly run leaves them alone, so it is reported once rather than every hour. Close the issue
+# to let it try again, or run this workflow by hand, which tries at once and takes a maidr.js
+# version, lower than the pin too. A failure that may pass next time (a download, the browser's
+# install, a release landing between the jobs) holds nothing for a day: the hourly run keeps
+# trying, without adding to the issue, and closes it once they land. The issue's body follows the
+# latest failure, and ends with scripts/update_maidr.py's HOLD_MARKER when that one holds them.
+#
+# The next hourly run raises a lower pin again, however it was set, so holding an older maidr.js
+# means disabling this workflow until maidr releases a fix.
 #
 # scripts/update_maidr.py does the work, and tests/test_update_maidr.py tests it.
 #
@@ -73,7 +79,7 @@ jobs:
     # A run started on another branch would push a commit made on that branch to main.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
       issues: read
@@ -86,6 +92,7 @@ jobs:
       digest: ${{ steps.update.outputs.digest }}
       stale: ${{ steps.gate.outputs.stale }}
       reason: ${{ steps.provenance.outputs.reason || steps.update.outputs.reason }}
+      passing: ${{ steps.provenance.outputs.passing }}
       failed_step: ${{ steps.failed.outputs.step }}
     steps:
       - uses: actions/checkout@v4
@@ -117,6 +124,7 @@ jobs:
           CHANGED: ${{ steps.update.outputs.changed }}
           TITLE: ${{ steps.update.outputs.issue_title }}
           UNCHOSEN: Automatic maidr update failed before choosing the versions
+          HOLD: "<!-- update-maidr: hold -->"
         with:
           script: |
             const changed = process.env.CHANGED === 'true';
@@ -138,7 +146,10 @@ jobs:
               && issue.user?.login === 'github-actions[bot]');
             core.setOutput('stale', String(issues.some((issue) => issue.title === process.env.UNCHOSEN)));
             const open = changed && issues.find((issue) => issue.title === process.env.TITLE);
-            if (open && context.eventName === 'schedule') {
+            // A failure that may pass next time is retried for a day after its issue opened.
+            const held = open && ((open.body ?? '').includes(process.env.HOLD)
+              || Date.now() - Date.parse(open.created_at) > 24 * 60 * 60 * 1000);
+            if (held && context.eventName === 'schedule') {
               core.notice(`#${open.number} reports these versions failing, so the hourly run leaves them alone. Close it, or run this workflow by hand, to try again.`);
               core.setOutput('proceed', 'false');
             } else {
@@ -172,20 +183,25 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         with:
           node-version: "22"
+      # Each of the next two runs once more after a failure, which is as likely a download or a
+      # timing as the release, so that it opens an issue only when it fails twice.
       - name: Install Playwright's Chromium
         id: browser
         if: steps.gate.outputs.proceed == 'true'
-        timeout-minutes: 10
+        timeout-minutes: 15
         working-directory: e2e
-        run: npm install --no-audit --no-fund && npx playwright-core install --with-deps chromium
+        run: |
+          install() { npm install --no-audit --no-fund && npx playwright-core install --with-deps chromium; }
+          install || { echo "::warning::Installing the browser failed; trying once more."; sleep 30; install; }
       # The whole loop in ext-apps' reference host, against the maidr.js the pin now names. It
       # checks that RunnableCommand offers exactly the commands that maidr.js lists as runnable,
       # so a release that adds or drops one fails here rather than shipping a stale enum.
       - name: e2e/run.sh
         id: e2e
         if: steps.gate.outputs.proceed == 'true'
-        timeout-minutes: 20
-        run: bash e2e/run.sh
+        timeout-minutes: 30
+        run: |
+          bash e2e/run.sh || { echo "::warning::e2e/run.sh failed; running it once more."; bash e2e/run.sh; }
 
       - name: Name the step that failed
         id: failed
@@ -207,6 +223,7 @@ jobs:
       pushed: ${{ steps.push.outputs.pushed }}
       sha: ${{ steps.push.outputs.sha }}
       reason: ${{ steps.provenance.outputs.reason || steps.land.outputs.reason }}
+      passing: ${{ steps.provenance.outputs.passing }}
       failed_step: ${{ steps.failed.outputs.step }}
     steps:
       # The same commit `check` checked out: a scheduled or dispatched run checks out github.sha.
@@ -296,17 +313,18 @@ jobs:
         env:
           STEP: ${{ needs.land.outputs.failed_step || needs.check.outputs.failed_step }}
           REASON: ${{ needs.land.outputs.reason || needs.check.outputs.reason }}
+          PASSING: ${{ needs.land.outputs.passing || needs.check.outputs.passing }}
           JS_OLD: ${{ needs.check.outputs.js_old }}
           JS_NEW: ${{ needs.check.outputs.js_new }}
           PY_OLD: ${{ needs.check.outputs.py_old }}
           PY_NEW: ${{ needs.check.outputs.py_new }}
         run: |
           uv run --no-project python scripts/update_maidr.py report \
-            --step "$STEP" --reason "$REASON" \
+            --step "$STEP" --reason "$REASON" --passing "$PASSING" \
             --js-old "$JS_OLD" --js-new "$JS_NEW" --py-old "$PY_OLD" --py-new "$PY_NEW" \
             --body-file "$RUNNER_TEMP/issue.md"
 
-      - name: Open the issue, or add to the open one
+      - name: Open the issue, or bring the open one up to date
         if: steps.issue.outcome == 'success'
         uses: actions/github-script@v7
         env:
@@ -328,8 +346,13 @@ jobs:
             if (!open) {
               const { data } = await github.rest.issues.create({ ...context.repo, title, body });
               core.notice(`Reported in #${data.number}.`);
-            } else if (context.eventName === 'schedule') {
-              core.notice(`#${open.number} already reports this; the hourly run does not add to it.`);
+              return;
+            }
+            // The body follows the latest failure, and with it whether the hourly run holds these
+            // versions. Editing it notifies no one; the hourly run adds nothing else.
+            await github.rest.issues.update({ ...context.repo, issue_number: open.number, body });
+            if (context.eventName === 'schedule') {
+              core.notice(`Brought #${open.number} up to date; the hourly run does not add to it.`);
             } else {
               await github.rest.issues.createComment({ ...context.repo, issue_number: open.number, body });
               core.notice(`Added to #${open.number}.`);

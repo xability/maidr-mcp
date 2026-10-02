@@ -440,6 +440,70 @@ def test_the_issue_names_the_versions_the_step_and_the_run():
     assert "(https://github.com/xability/maidr-mcp/actions/runs/7)" in body
 
 
+@pytest.mark.parametrize("step", ["provenance", "lint", "format", "pytest", "e2e", "push"])
+def test_a_failure_about_the_versions_holds_them(step):
+    _, body = um.issue(step=step, js_old=JS_PIN, js_new=JS_NEXT, py_old=PY_LOCKED, py_new=PY_LOCKED)
+    assert body.rstrip().endswith(um.HOLD_MARKER)
+    assert "leaves these versions alone" in body
+
+
+@pytest.mark.parametrize("step", ["gate", "sync", "browser", "land", "", "cancelled"])
+def test_a_failure_that_says_nothing_about_the_versions_holds_nothing(step):
+    _, body = um.issue(step=step, js_old=JS_PIN, js_new=JS_NEXT, py_old=PY_LOCKED, py_new=PY_LOCKED)
+    assert um.HOLD_MARKER not in body
+    assert "tries them again" in body and "a day after this issue was opened" in body
+
+
+def test_a_registry_that_could_not_be_read_holds_nothing(monkeypatch, tmp_path):
+    def unreachable(*args, **kwargs):
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(um.urllib.request, "urlopen", unreachable)
+    monkeypatch.setattr(um.time, "sleep", lambda _: None)
+    with pytest.raises(um.Refused) as refused:
+        um.fetch_json(f"{um.REGISTRY}/maidr/latest")
+    assert refused.value.passing
+
+    out = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    assert um.main(["provenance", "--maidr-js", JS_NEXT]) == 1
+    outputs = dict(line.split("=", 1) for line in out.read_text().splitlines())
+    assert outputs["passing"] == "true"
+    _, body = um.issue(
+        step="provenance",
+        reason=outputs["reason"],
+        passing=True,
+        js_old=JS_PIN,
+        js_new=JS_NEXT,
+        py_old=PY_LOCKED,
+        py_new=PY_LOCKED,
+    )
+    assert um.HOLD_MARKER not in body
+
+
+def test_a_refused_provenance_is_not_a_passing_fault():
+    with pytest.raises(um.Refused) as refused:
+        um.check_provenance(JS_NEXT, Registry(docs=npm(JS_NEXT, provenance=False)))
+    assert not refused.value.passing
+
+
+def test_the_issue_about_a_run_that_could_not_choose_holds_nothing():
+    title, body = um.issue(step="update", reason="could not read x", passing=True)
+    assert title == um.issue_title("", "")
+    assert um.HOLD_MARKER not in body and "once a run chooses the versions" in body
+
+
+def test_every_step_that_can_fail_is_named():
+    ids = set(
+        re.findall(r"^\s+(?:- )?id: (\w+)$", WORKFLOW.read_text(encoding="utf-8"), re.MULTILINE)
+    )
+    assert ids - {"failed", "issue"} == set(um.STEPS)
+
+
+def test_the_workflow_holds_by_the_marker_the_issue_ends_with():
+    assert f'HOLD: "{um.HOLD_MARKER}"\n' in WORKFLOW.read_text(encoding="utf-8")
+
+
 def test_the_issue_gives_the_reason_on_one_line():
     _, body = um.issue(step="provenance", reason="maidr.js 4.14.0 carries no npm provenance\n\n#")
     assert "Why: maidr.js 4.14.0 carries no npm provenance #." in body

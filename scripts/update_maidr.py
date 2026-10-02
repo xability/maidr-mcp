@@ -35,7 +35,7 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVER = Path("src/maidr_mcp/server.py")
@@ -49,6 +49,9 @@ MAIDR_RELEASE_REF = "refs/heads/main"
 SLSA_PROVENANCE = "https://slsa.dev/provenance/v1"
 # Every issue title starts with it.
 TITLE_PREFIX = "Automatic maidr update"
+# The body of an issue ends with it when its failure holds the versions (Step.holds): while that
+# issue is open, the hourly run leaves them alone. update-maidr.yml looks for it.
+HOLD_MARKER = "<!-- update-maidr: hold -->"
 
 # An npm version as semver writes it: MAJOR.MINOR.PATCH, numeric identifiers without leading
 # zeros, an optional -prerelease, and no +build, which npm drops from what it publishes. ASCII
@@ -73,7 +76,15 @@ Lock = Callable[[Path, str], None]
 
 
 class Refused(Exception):
-    """The update stopped. The message goes into an issue, so it never quotes what it refused."""
+    """The update stopped. The message goes into an issue, so it never quotes what it refused.
+
+    ``passing`` marks a fault that says nothing about the versions, a registry that could not
+    be read, so the hourly run tries them again.
+    """
+
+    def __init__(self, message: str, *, passing: bool = False) -> None:
+        super().__init__(message)
+        self.passing = passing
 
 
 def log(message: str) -> None:
@@ -184,7 +195,7 @@ def fetch_json(url: str) -> Any:
             log(f"{url}: {error}")
             if attempt < 2:
                 time.sleep(10)
-    raise Refused(f"could not read {url}")
+    raise Refused(f"could not read {url}", passing=True)
 
 
 def uv_lock(root: Path, requirement: str) -> None:
@@ -383,28 +394,36 @@ REPRODUCE = (
     "`uv run --no-project python scripts/update_maidr.py update` writes the same update in a "
     "checkout, to reproduce it."
 )
+
+
+class Step(NamedTuple):
+    doing: str
+    hint: str = ""
+    # Whether trying the same versions again would only repeat a failure here: a check failing
+    # on them, or a push GitHub refused. The hourly run then leaves them alone while the issue is
+    # open. One that may pass next time (a download, the browser's install, a release landing
+    # between the jobs) it tries again, for a day.
+    holds: bool = False
+
+
 # The steps of update-maidr.yml that can fail, by id: what each was doing, and what to do.
 STEPS = {
-    "update": (
-        "finding the newest releases (npm's latest maidr.js and PyPI's newest py-maidr)",
-        "",
+    "update": Step(
+        "finding the newest releases (npm's latest maidr.js and PyPI's newest py-maidr)"
     ),
-    "gate": ("looking for an open issue about these versions", ""),
-    "provenance": (
+    "gate": Step("looking for open issues about the update"),
+    "provenance": Step(
         "checking the new maidr.js's npm provenance",
         "If maidr now publishes from another workflow or branch, `MAIDR_RELEASE_WORKFLOW` and "
         "`MAIDR_RELEASE_REF` in `scripts/update_maidr.py` name the ones it accepts.",
+        holds=True,
     ),
-    "sync": ("`uv sync --locked`", REPRODUCE),
-    "lint": ("`uv run ruff check .`", ""),
-    "format": ("`uv run ruff format --check .`", ""),
-    "pytest": ("`pytest`, on Python 3.10 and 3.13 as ci.yml runs it", REPRODUCE),
-    "browser": (
-        "installing Playwright's Chromium",
-        "That says nothing about the new versions: close this issue to let the hourly run "
-        "try again.",
-    ),
-    "e2e": (
+    "sync": Step("`uv sync --locked`", REPRODUCE),
+    "lint": Step("`uv run ruff check .`", holds=True),
+    "format": Step("`uv run ruff format --check .`", holds=True),
+    "pytest": Step("`pytest`, on Python 3.10 and 3.13 as ci.yml runs it", REPRODUCE, holds=True),
+    "browser": Step("installing Playwright's Chromium"),
+    "e2e": Step(
         "`bash e2e/run.sh`",
         "If the log has `FAIL  maidr_run_command offers the model exactly the commands maidr "
         "lists as runnable`, this maidr.js runs other commands than `RunnableCommand` in "
@@ -412,12 +431,14 @@ STEPS = {
         "pins, in step with it in a pull request that also raises the pin, which "
         "`uv run --no-project python scripts/update_maidr.py update` writes; the pull request "
         "can close this issue.",
+        holds=True,
     ),
-    "land": ("writing the update again in the job that pushes", ""),
-    "push": (
+    "land": Step("writing the update again in the job that pushes"),
+    "push": Step(
         "pushing to `main`",
         "The push was refused for some reason other than `main` moving on, which the job "
         "leaves to the next run: check that GitHub Actions may still push to `main`.",
+        holds=True,
     ),
 }
 
@@ -430,18 +451,20 @@ def issue(
     js_new: str = "",
     py_old: str = "",
     py_new: str = "",
+    passing: bool = False,
     run_url: str = "",
 ) -> tuple[str, str]:
     """The title and body of the issue for a failed run.
 
     The workflow passes these in from its jobs' outputs. Anything not a version is dropped, a
     step not in STEPS is not named, and the reason, which only this script writes, goes on one
-    line; so nothing reaches the issue that this script did not write or check.
+    line; so nothing reaches the issue that this script did not write or check. ``passing``
+    says the step's script refused for a passing fault, which holds nothing.
     """
 
     js_old, js_new = valid(js_old), valid(js_new)
     py_old, py_new = valid(py_old, PYPI_VERSION), valid(py_new, PYPI_VERSION)
-    doing, hint = STEPS.get(step, ("a step that did not record its name", ""))
+    doing, hint, holds = STEPS.get(step, Step("a step that did not record its name"))
     parts = [f"The automatic maidr update did not reach `main`: it stopped at {doing}."]
     if js_new and py_new:
         parts.append(
@@ -455,13 +478,21 @@ def issue(
     if hint:
         parts.append(hint)
     parts.append("Nothing was pushed." + (f" [The run]({run_url}) has the log." if run_url else ""))
-    if js_new and py_new:
+    if js_new and py_new and holds and not passing:
         parts.append(
             "While this issue is open, the hourly run leaves these versions alone, so this is "
             "reported once rather than every hour. Close it once the cause is fixed, or if it "
             "was a passing fault, and the next hourly run tries again; running **update-maidr** "
             "from the Actions tab tries at once, and takes a maidr.js version. A newer maidr.js "
             "or py-maidr is tried as usual."
+        )
+        parts.append(HOLD_MARKER)
+    elif js_new and py_new:
+        parts.append(
+            "This failure says nothing about these versions, so the hourly run tries them "
+            "again, without adding to this issue, and closes it once they reach `main`. If they "
+            "still fail a day after this issue was opened, it leaves them alone until the issue "
+            "is closed. Running **update-maidr** from the Actions tab tries at once."
         )
     else:
         parts.append(
@@ -544,7 +575,7 @@ def main(argv: list[str] | None = None) -> int:
     prov = commands.add_parser("provenance", help="check a maidr.js's npm provenance")
     prov.add_argument("--maidr-js", required=True)
     rep = commands.add_parser("report", help="write the issue for a failed run")
-    for name in ("step", "reason", "js-old", "js-new", "py-old", "py-new"):
+    for name in ("step", "reason", "passing", "js-old", "js-new", "py-old", "py-new"):
         rep.add_argument(f"--{name}", default="")
     rep.add_argument("--body-file", type=Path, required=True)
     res = commands.add_parser(
@@ -579,6 +610,7 @@ def main(argv: list[str] | None = None) -> int:
             js_new=args.js_new,
             py_old=args.py_old,
             py_new=args.py_new,
+            passing=args.passing == "true",
             run_url=run_url_from_env(),
         )
         args.body_file.write_text(body, encoding="utf-8")
@@ -603,7 +635,7 @@ def main(argv: list[str] | None = None) -> int:
             )
     except Refused as refused:
         log(str(refused))
-        write_outputs({"reason": str(refused)})
+        write_outputs({"reason": str(refused), **({"passing": "true"} if refused.passing else {})})
         return 1
     write_outputs(change.outputs())
     for name, old, new in (
