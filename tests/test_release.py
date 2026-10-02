@@ -72,3 +72,28 @@ def test_every_action_in_the_release_is_pinned_to_a_commit():
     for action, comment in uses:
         assert re.fullmatch(r"[\w-]+/[\w-]+@[0-9a-f]{40}", action), action
         assert re.fullmatch(r" # v\d+\.\d+\.\d+", comment), action
+
+
+def test_the_changelog_leaves_out_chores_and_keeps_the_rest():
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    patterns = json.loads(re.search(r"^exclude_commit_patterns = (\[.*\])$", pyproject, re.M)[1])
+    left_out = [re.compile(pattern) for pattern in patterns]
+
+    def listed(subject: str) -> bool:
+        return not any(pattern.match(subject) for pattern in left_out)
+
+    for subject in [
+        "feat: draw pie charts",
+        "fix(deps): load maidr.js 4.14.0",
+        "feat!: drop the old view",
+        "perf: cache the drawn svg",
+        "docs: say how to set a token",
+    ]:
+        assert listed(subject), subject
+    for subject in [
+        "chore(release): 0.2.0",
+        "chore(deps): load py-maidr 1.27.0",
+        "chore: tidy",
+        "Merge branch 'main'",
+    ]:
+        assert not listed(subject), subject
