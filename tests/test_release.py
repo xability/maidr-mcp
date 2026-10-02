@@ -57,3 +57,14 @@ def test_the_package_readme_proves_the_name():
 def test_the_image_label_proves_the_name():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert f'LABEL io.modelcontextprotocol.server.name="{NAME}"\n' in dockerfile
+
+
+def test_every_action_in_the_release_is_pinned_to_a_commit():
+    # The release runs them beside tokens that push tags, publish to PyPI and write the image,
+    # so a tag moved upstream must not change what runs.
+    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    uses = re.findall(r"uses: (\S+)(.*)$", workflow, re.MULTILINE)
+    assert len(uses) == 16
+    for action, comment in uses:
+        assert re.fullmatch(r"[\w-]+/[\w-]+@[0-9a-f]{40}", action), action
+        assert re.fullmatch(r" # v\d+\.\d+\.\d+", comment), action
