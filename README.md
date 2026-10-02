@@ -180,6 +180,15 @@ uv run pytest
 bash e2e/run.sh
 ```
 
+### How maidr releases reach maidr-mcp
+
+- **maidr.js,** in the chart view, is the version `MAIDR_JS_VERSION` in `server.py` names. `update-maidr.yml` raises it within about an hour of an npm release, once the checks below pass, so an install or image made from `main` after that loads it.
+- **py-maidr,** which draws the chart, is resolved afresh by every `uvx` or Docker install, within `maidr>=1.26,<2`, so a new install has a release as soon as PyPI does. `uv.lock`, which the same workflow raises, pins the py-maidr that CI and a checkout test against.
+
+`.github/workflows/update-maidr.yml` checks npm and PyPI every hour. A new maidr.js must carry npm provenance from maidr's release workflow. Then ruff, pytest on Python 3.10 and 3.13, and `e2e/run.sh` run against the new versions, and only when all of them pass does the workflow commit them to `main`, as `chore:`. A maidr.js that changes its runnable commands fails `e2e/run.sh` rather than shipping with a stale `RunnableCommand`. When a check fails, nothing is pushed, and an issue names the versions, the step, and the run.
+
+To pick another version, run the workflow from the Actions tab with a maidr.js version, or in a checkout run `uv run --no-project python scripts/update_maidr.py update --maidr-js <version> --allow-lower` and open a pull request. The next hourly run raises a lower pin again, so to hold maidr.js at an older version, disable the workflow in the Actions tab until maidr releases a fix.
+
 ## License
 
 GPL-3.0-or-later, like the rest of maidr.

@@ -1,0 +1,340 @@
+name: update-maidr
+
+# Raises maidr-mcp's two maidr pins when maidr releases, and commits them to main once every check
+# passes against the release:
+#
+# - MAIDR_JS_VERSION in src/maidr_mcp/server.py, the maidr.js the chart view loads from jsDelivr:
+#   what every reader gets;
+# - maidr (py-maidr) in uv.lock, what CI and a checkout test against. uvx and Docker installs
+#   resolve py-maidr afresh within pyproject's range, so the lock is what trails.
+#
+# Hourly, because nothing tells this repository about a release: maidr's release workflow tells
+# r-maidr, py-maidr and maidr-skill through a GitHub App that is not installed here, and PyPI
+# tells no one. The repository_dispatch trigger is ready for the day the app is. Most runs find
+# nothing new and stop after a registry lookup and a `uv lock`, with no Node and no browser.
+#
+# Something new goes through three jobs:
+# - `check` writes it and runs ci.yml's checks against it, with a read-only token;
+# - `land` writes it again, with this repository's script alone, and commits and pushes it if the
+#   files come out the same;
+# - `report` opens an issue when either fails, or comments on the open one for the same versions.
+#
+# The checks run code nobody here has read: the new py-maidr and what it pulls in, and the npm
+# packages of ext-apps' reference host, which the e2e installs without a lockfile, so afresh on
+# every run. In their own job that code never shares a runner with a token that can push, and
+# `land` runs none of it.
+#
+# While an issue for some versions is open, the hourly run leaves those versions alone, so a
+# failure is reported once rather than every hour: close the issue to let it try again, or run
+# this workflow by hand, which tries at once and takes a maidr.js version, lower than the pin
+# too. The next hourly run raises a lower pin again, however it was set, so holding an older
+# maidr.js means disabling this workflow until maidr releases a fix.
+#
+# scripts/update_maidr.py does the work, and tests/test_update_maidr.py tests it.
+#
+# GitHub turns a public repository's schedules off after 60 days without activity; the Actions
+# tab turns this one back on.
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+    inputs:
+      maidr_js_version:
+        description: "maidr.js version to load, lower than the current one too (default: npm's latest)"
+        required: false
+        default: ""
+  repository_dispatch:
+    # maidr-released: client_payload.version names the maidr.js just published. Whoever holds a
+    # token that can dispatch here writes it, so it reaches the script through env: only, and the
+    # script refuses anything but a version number before it reaches a file, a path or a URL.
+    # py-maidr-released only wakes the job, which locks PyPI's newest py-maidr either way; its
+    # payload is not read.
+    types: [maidr-released, py-maidr-released]
+
+# Each job asks for what it needs: contents: write and issues: write between them.
+permissions: {}
+
+# One run at a time, queued rather than cancelled, so no run stops between its commit and its
+# push. GitHub keeps one run waiting and drops an older waiting one, which would have found the
+# same releases.
+concurrency:
+  group: update-maidr
+  cancel-in-progress: false
+
+jobs:
+  check:
+    # A run started on another branch would push a commit made on that branch to main.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
+      js_old: ${{ steps.update.outputs.js_old }}
+      js_new: ${{ steps.update.outputs.js_new }}
+      py_old: ${{ steps.update.outputs.py_old }}
+      py_new: ${{ steps.update.outputs.py_new }}
+      digest: ${{ steps.update.outputs.digest }}
+      reason: ${{ steps.provenance.outputs.reason || steps.update.outputs.reason }}
+      failed_step: ${{ steps.failed.outputs.step }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Write the newest maidr.js and py-maidr
+        id: update
+        env:
+          EVENT: ${{ github.event_name }}
+          REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.maidr_js_version || github.event.action == 'maidr-released' && github.event.client_payload.version || '' }}
+        run: |
+          # A version given by hand may lower the pin; a scheduled or dispatched run only raises it.
+          lower=()
+          if [ "$EVENT" = workflow_dispatch ]; then lower=(--allow-lower); fi
+          uv run --no-project python scripts/update_maidr.py update --maidr-js "$REQUESTED" "${lower[@]}"
+
+      - name: Look for an open issue about these versions
+        id: gate
+        if: steps.update.outputs.changed == 'true'
+        uses: actions/github-script@v7
+        env:
+          TITLE: ${{ steps.update.outputs.issue_title }}
+        with:
+          script: |
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              ...context.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            // The bot's own only: anyone can open an issue with this title.
+            const open = issues.find((issue) => !issue.pull_request
+              && issue.user?.login === 'github-actions[bot]' && issue.title === process.env.TITLE);
+            if (open && context.eventName === 'schedule') {
+              core.notice(`#${open.number} reports these versions failing, so the hourly run leaves them alone. Close it, or run this workflow by hand, to try again.`);
+              core.setOutput('proceed', 'false');
+            } else {
+              core.setOutput('proceed', 'true');
+            }
+
+      - name: Check the new maidr.js's npm provenance
+        id: provenance
+        if: steps.gate.outputs.proceed == 'true' && steps.update.outputs.js_new != steps.update.outputs.js_old
+        env:
+          JS_NEW: ${{ steps.update.outputs.js_new }}
+        run: uv run --no-project python scripts/update_maidr.py provenance --maidr-js "$JS_NEW"
+
+      # ci.yml's checks, which the push in `land` does not start.
+      - id: sync
+        if: steps.gate.outputs.proceed == 'true'
+        run: uv sync --locked
+      - id: lint
+        if: steps.gate.outputs.proceed == 'true'
+        run: uv run ruff check .
+      - id: format
+        if: steps.gate.outputs.proceed == 'true'
+        run: uv run ruff format --check .
+      - name: pytest on Python 3.10 and 3.13, as ci.yml's matrix
+        id: pytest
+        if: steps.gate.outputs.proceed == 'true'
+        run: |
+          uv run --isolated --locked --python 3.10 pytest -q
+          uv run --isolated --locked --python 3.13 pytest -q
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.proceed == 'true'
+        with:
+          node-version: "22"
+      - name: Install Playwright's Chromium
+        id: browser
+        if: steps.gate.outputs.proceed == 'true'
+        timeout-minutes: 10
+        working-directory: e2e
+        run: npm install --no-audit --no-fund && npx playwright-core install --with-deps chromium
+      # The whole loop in ext-apps' reference host, against the maidr.js the pin now names. It
+      # checks that RunnableCommand offers exactly the commands that maidr.js lists as runnable,
+      # so a release that adds or drops one fails here rather than shipping a stale enum.
+      - name: e2e/run.sh
+        id: e2e
+        if: steps.gate.outputs.proceed == 'true'
+        timeout-minutes: 20
+        run: bash e2e/run.sh
+
+      - name: Name the step that failed
+        id: failed
+        if: failure()
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          step=$(jq -r '[to_entries[] | select(.value.outcome == "failure") | .key] | first // ""' <<<"$STEPS")
+          echo "step=$step" >> "$GITHUB_OUTPUT"
+
+  land:
+    needs: check
+    if: needs.check.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      issues: write
+    outputs:
+      reason: ${{ steps.provenance.outputs.reason || steps.land.outputs.reason }}
+      failed_step: ${{ steps.failed.outputs.step }}
+    steps:
+      # The same commit `check` checked out: a scheduled or dispatched run checks out github.sha.
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the new maidr.js's npm provenance
+        id: provenance
+        if: needs.check.outputs.js_new != needs.check.outputs.js_old
+        env:
+          JS_NEW: ${{ needs.check.outputs.js_new }}
+        run: uv run --no-project python scripts/update_maidr.py provenance --maidr-js "$JS_NEW"
+
+      # The versions `check` chose, written again here and compared with what it checked, so
+      # nothing from its runner reaches main but two version numbers. `uv lock` resolves from
+      # wheels and published metadata alone (--no-build), so this job runs no package's code.
+      - name: Write the checked versions again
+        id: land
+        env:
+          JS_NEW: ${{ needs.check.outputs.js_new }}
+          PY_NEW: ${{ needs.check.outputs.py_new }}
+          DIGEST: ${{ needs.check.outputs.digest }}
+        run: |
+          uv run --no-project python scripts/update_maidr.py update \
+            --maidr-js "$JS_NEW" --py-maidr "$PY_NEW" --allow-lower \
+            --expect-digest "$DIGEST" --message-file "$RUNNER_TEMP/commit-message"
+
+      # A push made with GITHUB_TOKEN does not start ci.yml, which is why `check` ran its checks
+      # against this very tree. It left out ci.yml's Docker job: the image installs py-maidr
+      # afresh from PyPI whatever uv.lock says, so these pins cannot change what that job sees.
+      - name: Commit and push to main
+        id: push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- src/maidr_mcp/server.py uv.lock
+          git commit --quiet --file "$RUNNER_TEMP/commit-message"
+          if git push --quiet origin HEAD:main; then
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            git log -1 --format='Pushed %h: %s'
+            exit 0
+          fi
+          # main moved on while the checks ran. Rebased onto it, this commit would land in a tree
+          # nobody checked, and checking it is what the next hourly run does from the new main.
+          git fetch --quiet origin main
+          if [ "$(git rev-parse FETCH_HEAD)" != "$(git rev-parse HEAD^)" ]; then
+            echo "::warning::main moved on while the checks ran, so the update was not pushed. The next hourly run tries it against the new main."
+            exit 0
+          fi
+          exit 1
+
+      # The update is on main by now: a failure here must not report that it is not.
+      - name: Close the issues this update supersedes
+        if: steps.push.outputs.pushed == 'true'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          JS_NEW: ${{ needs.check.outputs.js_new }}
+          PY_NEW: ${{ needs.check.outputs.py_new }}
+          SHA: ${{ steps.push.outputs.sha }}
+        with:
+          script: |
+            const { JS_NEW, PY_NEW, SHA } = process.env;
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              ...context.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const body = `\`main\` now loads maidr.js ${JS_NEW} and locks py-maidr ${PY_NEW} (${SHA}), which passed every check, so this report is out of date. A failure with a later release opens a new issue.`;
+            for (const issue of issues) {
+              // scripts/update_maidr.py's TITLE_PREFIX starts every title it writes.
+              if (issue.pull_request || issue.user?.login !== 'github-actions[bot]'
+                || !issue.title.startsWith('Automatic maidr update')) continue;
+              await github.rest.issues.createComment({ ...context.repo, issue_number: issue.number, body });
+              await github.rest.issues.update({
+                ...context.repo,
+                issue_number: issue.number,
+                state: 'closed',
+                state_reason: 'completed',
+              });
+              core.info(`Closed #${issue.number}.`);
+            }
+
+      - name: Name the step that failed
+        id: failed
+        if: failure()
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          step=$(jq -r '[to_entries[] | select(.value.outcome == "failure") | .key] | first // ""' <<<"$STEPS")
+          echo "step=$step" >> "$GITHUB_OUTPUT"
+
+  report:
+    needs: [check, land]
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      # The script puts into the issue only what it wrote or checked: version numbers, a step it
+      # knows, and a reason it gave itself. A version it refused is never in it.
+      - name: Write the issue
+        id: issue
+        env:
+          STEP: ${{ needs.land.outputs.failed_step || needs.check.outputs.failed_step }}
+          REASON: ${{ needs.land.outputs.reason || needs.check.outputs.reason }}
+          JS_OLD: ${{ needs.check.outputs.js_old }}
+          JS_NEW: ${{ needs.check.outputs.js_new }}
+          PY_OLD: ${{ needs.check.outputs.py_old }}
+          PY_NEW: ${{ needs.check.outputs.py_new }}
+        run: |
+          uv run --no-project python scripts/update_maidr.py report \
+            --step "$STEP" --reason "$REASON" \
+            --js-old "$JS_OLD" --js-new "$JS_NEW" --py-old "$PY_OLD" --py-new "$PY_NEW" \
+            --body-file "$RUNNER_TEMP/issue.md"
+
+      - name: Open the issue, or add to the open one
+        uses: actions/github-script@v7
+        env:
+          TITLE: ${{ steps.issue.outputs.title }}
+          BODY_FILE: ${{ runner.temp }}/issue.md
+        with:
+          script: |
+            const fs = require('node:fs');
+            const title = process.env.TITLE;
+            const body = fs.readFileSync(process.env.BODY_FILE, 'utf8');
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              ...context.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            // The bot's own only: anyone can open an issue with this title.
+            const open = issues.find((issue) => !issue.pull_request
+              && issue.user?.login === 'github-actions[bot]' && issue.title === title);
+            if (!open) {
+              const { data } = await github.rest.issues.create({ ...context.repo, title, body });
+              core.notice(`Reported in #${data.number}.`);
+            } else if (context.eventName === 'schedule') {
+              core.notice(`#${open.number} already reports this; the hourly run does not add to it.`);
+            } else {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: open.number, body });
+              core.notice(`Added to #${open.number}.`);
+            }
