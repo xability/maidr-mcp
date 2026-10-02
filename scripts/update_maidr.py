@@ -486,6 +486,13 @@ def issue(
             "from the Actions tab tries at once, and takes a maidr.js version. A newer maidr.js "
             "or py-maidr is tried as usual."
         )
+        if js_old and js_new != js_old:
+            parts.append(
+                "Every update pairs npm's latest maidr.js with PyPI's newest py-maidr, so until "
+                f"maidr.js {js_new} passes, a new py-maidr is tried only with it. To raise "
+                "py-maidr alone meanwhile, run **update-maidr** by hand with maidr.js "
+                f"{js_old}, the version `main` loads."
+            )
         parts.append(HOLD_MARKER)
     elif js_new and py_new:
         parts.append(
@@ -508,17 +515,29 @@ def resolved(
     landed_js: str = "",
     landed_py: str = "",
     sha: str = "",
+    reported_js: str = "",
+    reported_py: str = "",
+    reported_issue: str = "",
     run_url: str = "",
 ) -> list[dict[str, Any]]:
     """The bot's open update issues that this run settles, each with the comment that closes it.
 
     ``issues`` are those issues as ``{"number", "title"}``; the workflow calls this only once a
     run has chosen the versions, which settles the issue about a run that could not. A run that
-    also pushed ``landed_js`` and ``landed_py`` settles every pair no newer than them. A pair
-    newer in either stays open: one a lower maidr.js given by hand left behind, say.
+    also pushed ``landed_js`` and ``landed_py`` settles every pair no newer than them. One that
+    failed with ``reported_js`` and ``reported_py``, reported in ``reported_issue``, settles every
+    other pair no newer than those, which no automatic run tries again. A pair newer in either
+    stays open: one a lower maidr.js given by hand left behind, say.
     """
     landed_js, landed_py = valid(landed_js), valid(landed_py, PYPI_VERSION)
     sha = sha if re.fullmatch(r"[0-9a-f]{40}", sha) else ""
+    reported_js, reported_py = valid(reported_js), valid(reported_py, PYPI_VERSION)
+    if not re.fullmatch(r"[1-9][0-9]{0,9}", reported_issue):
+        reported_js = reported_py = ""
+
+    def no_newer(js: str, py: str, than_js: str, than_py: str) -> bool:
+        return version_key(js) <= version_key(than_js) and pypi_key(py) <= pypi_key(than_py)
+
     later = f"[A later run]({run_url})" if run_url else "A later run"
     settled = []
     for item in issues if isinstance(issues, list) else []:
@@ -531,16 +550,28 @@ def resolved(
             continue
         pair = PAIR_TITLE.fullmatch(title)
         js, py = (valid(pair[1]), valid(pair[2], PYPI_VERSION)) if pair else ("", "")
-        if not (js and py and landed_js and landed_py):
+        if not (js and py):
             continue
-        if version_key(js) > version_key(landed_js) or pypi_key(py) > pypi_key(landed_py):
+        if landed_js and landed_py and no_newer(js, py, landed_js, landed_py):
+            commit = f" ({sha})" if sha else ""
+            comment = (
+                f"`main` now loads maidr.js {landed_js} and locks py-maidr {landed_py}{commit}, "
+                "which passed every check, so this report is out of date. A failure with a later "
+                "release opens a new issue."
+            )
+        elif (
+            reported_js
+            and reported_py
+            and title != issue_title(reported_js, reported_py)
+            and no_newer(js, py, reported_js, reported_py)
+        ):
+            comment = (
+                f"{later} tried maidr.js {reported_js} with py-maidr {reported_py}, and "
+                f"#{reported_issue} reports how that failed, so this report is out of date: no "
+                "automatic run tries these versions again."
+            )
+        else:
             continue
-        commit = f" ({sha})" if sha else ""
-        comment = (
-            f"`main` now loads maidr.js {landed_js} and locks py-maidr {landed_py}{commit}, which "
-            "passed every check, so this report is out of date. A failure with a later release "
-            "opens a new issue."
-        )
         settled.append({"number": number, "comment": comment})
     return settled
 
@@ -582,7 +613,7 @@ def main(argv: list[str] | None = None) -> int:
         "resolved",
         help="read the bot's open issues as JSON on stdin; print the ones this run settles",
     )
-    for name in ("landed-js", "landed-py", "sha"):
+    for name in ("landed-js", "landed-py", "sha", "reported-js", "reported-py", "reported-issue"):
         res.add_argument(f"--{name}", default="")
     args = parser.parse_args(argv)
 
@@ -597,6 +628,9 @@ def main(argv: list[str] | None = None) -> int:
             landed_js=args.landed_js,
             landed_py=args.landed_py,
             sha=args.sha,
+            reported_js=args.reported_js,
+            reported_py=args.reported_py,
+            reported_issue=args.reported_issue,
             run_url=run_url_from_env(),
         )
         print(json.dumps(settled))

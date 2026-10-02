@@ -497,7 +497,9 @@ def test_every_step_that_can_fail_is_named():
     ids = set(
         re.findall(r"^\s+(?:- )?id: (\w+)$", WORKFLOW.read_text(encoding="utf-8"), re.MULTILINE)
     )
-    assert ids - {"failed", "issue"} == set(um.STEPS)
+    # Every step of `check` and `land` but the one that names the failed step; `report`'s own
+    # steps (issue, open) report nothing.
+    assert ids - {"failed", "issue", "open"} == set(um.STEPS)
 
 
 def test_the_workflow_holds_by_the_marker_the_issue_ends_with():
@@ -557,6 +559,33 @@ def test_a_landed_update_settles_the_pairs_no_newer_than_it():
     settled = um.resolved(issues, landed_js=JS_PIN, landed_py=PY_NEXT, sha=SHA)
     assert [s["number"] for s in settled] == [1, 2, 3, 6]
     assert f"maidr.js {JS_PIN} and locks py-maidr {PY_NEXT} ({SHA})" in settled[0]["comment"]
+
+
+def test_a_reported_failure_settles_the_older_pairs_no_run_tries_again():
+    issues = open_issues(
+        um.issue_title(JS_NEXT, PY_LOCKED),  # 1: the same maidr.js with an older py-maidr
+        um.issue_title(JS_NEXT, PY_NEXT),  # 2: the pair just reported
+        um.issue_title(JS_PIN, PY_LOCKED),  # 3: older in both
+        um.issue_title(bumped(JS_NEXT), PY_LOCKED),  # 4: a newer maidr.js, given by hand
+    )
+    settled = um.resolved(issues, reported_js=JS_NEXT, reported_py=PY_NEXT, reported_issue="2")
+    assert [s["number"] for s in settled] == [1, 3]
+    assert "#2 reports how that failed" in settled[0]["comment"]
+    # Without the number of the issue that reports it, a failure settles nothing.
+    for number in ("", "0", "2; x", "#2"):
+        assert (
+            um.resolved(issues, reported_js=JS_NEXT, reported_py=PY_NEXT, reported_issue=number)
+            == []
+        )
+
+
+def test_a_held_maidr_js_says_how_to_raise_py_maidr_alone():
+    _, body = um.issue(step="e2e", js_old=JS_PIN, js_new=JS_NEXT, py_old=PY_LOCKED, py_new=PY_NEXT)
+    assert f"run **update-maidr** by hand with maidr.js {JS_PIN}" in body
+    _, only_py = um.issue(
+        step="e2e", js_old=JS_PIN, js_new=JS_PIN, py_old=PY_LOCKED, py_new=PY_NEXT
+    )
+    assert "py-maidr alone" not in only_py
 
 
 def test_only_what_it_can_check_settles_an_issue():

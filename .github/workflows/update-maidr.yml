@@ -18,8 +18,8 @@ name: update-maidr
 # - `land` writes it again, with this repository's script alone, and commits and pushes it if the
 #   files come out the same;
 # - `report` opens an issue when either fails, or brings the open one for the same versions up to
-#   date, and closes the issues a run settles: about versions no newer than it pushed, or about a
-#   run that could not choose the versions, once one has.
+#   date, and closes the issues a run settles: about versions no newer than it pushed or reported
+#   failing, or about a run that could not choose the versions, once one has.
 #
 # The checks run code nobody here has read: the new py-maidr and what it pulls in, and the npm
 # packages of ext-apps' reference host, which the e2e installs without a lockfile, so afresh on
@@ -325,6 +325,7 @@ jobs:
             --body-file "$RUNNER_TEMP/issue.md"
 
       - name: Open the issue, or bring the open one up to date
+        id: open
         if: steps.issue.outcome == 'success'
         uses: actions/github-script@v7
         env:
@@ -345,9 +346,11 @@ jobs:
               && issue.user?.login === 'github-actions[bot]' && issue.title === title);
             if (!open) {
               const { data } = await github.rest.issues.create({ ...context.repo, title, body });
+              core.setOutput('number', String(data.number));
               core.notice(`Reported in #${data.number}.`);
               return;
             }
+            core.setOutput('number', String(open.number));
             // The body follows the latest failure, and with it whether the hourly run holds these
             // versions. Editing it notifies no one; the hourly run adds nothing else.
             await github.rest.issues.update({ ...context.repo, issue_number: open.number, body });
@@ -368,6 +371,9 @@ jobs:
           LANDED_JS: ${{ needs.land.outputs.pushed == 'true' && needs.check.outputs.js_new || '' }}
           LANDED_PY: ${{ needs.land.outputs.pushed == 'true' && needs.check.outputs.py_new || '' }}
           SHA: ${{ needs.land.outputs.sha }}
+          REPORTED_JS: ${{ needs.check.outputs.js_new }}
+          REPORTED_PY: ${{ needs.check.outputs.py_new }}
+          REPORTED_ISSUE: ${{ steps.open.outputs.number }}
         with:
           script: |
             const all = await github.paginate(github.rest.issues.listForRepo, {
@@ -378,11 +384,13 @@ jobs:
             // The bot's own only: anyone can open an issue with these titles.
             const issues = all.filter((issue) => !issue.pull_request
               && issue.user?.login === 'github-actions[bot]');
-            const { LANDED_JS, LANDED_PY, SHA } = process.env;
+            const env = process.env;
             const { stdout } = await exec.getExecOutput(
               'uv',
               ['run', '--no-project', 'python', 'scripts/update_maidr.py', 'resolved',
-                '--landed-js', LANDED_JS, '--landed-py', LANDED_PY, '--sha', SHA],
+                '--landed-js', env.LANDED_JS, '--landed-py', env.LANDED_PY, '--sha', env.SHA,
+                '--reported-js', env.REPORTED_JS, '--reported-py', env.REPORTED_PY,
+                '--reported-issue', env.REPORTED_ISSUE],
               { input: Buffer.from(JSON.stringify(issues.map(({ number, title }) => ({ number, title })))) },
             );
             for (const { number, comment } of JSON.parse(stdout)) {
