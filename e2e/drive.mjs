@@ -665,14 +665,17 @@ try {
     await noticeComes(/^The assistant has a move waiting for you: Tab into the chart to hear it\.$/),
     await notice(),
   );
+  // Still inside the 10 seconds, or maidr would take them in: say so rather than fail on its answer.
+  const tooSoonRunAt = Date.now() - focusMovedAt;
   const tooSoonRun = await callTool("maidr_run_command", { viewId, command: "toggle_sound", focus: true });
   const keptBoth = await callTool("maidr_list_commands", { viewId });
   check(
     "  a command with focus: true is kept too, and the status line names the move and the command",
-    tooSoonRun.ok && tooSoonRun.applied === "on-next-focus" && tooSoonRun.focused === false && /less than 10 seconds ago/.test(tooSoonRun.message) &&
+    tooSoonRunAt < 10_000 &&
+      tooSoonRun.ok && tooSoonRun.applied === "on-next-focus" && tooSoonRun.focused === false && /less than 10 seconds ago/.test(tooSoonRun.message) &&
       keptBoth.pending === 1 && keptBoth.reader?.inChart === false &&
       (await noticeComes(/^The assistant has a move and a command waiting for you: Tab into the chart to hear them\.$/)),
-    { result: tooSoonRun, pending: keptBoth.pending, status: await notice(), hint: noFocusHint(tooSoonRun) },
+    { elapsed: tooSoonRunAt, result: tooSoonRun, pending: keptBoth.pending, status: await notice(), hint: noFocusHint(tooSoonRun) },
   );
 
   // Past the 10 seconds, a command with focus takes the reader in: it waits its turn behind the
