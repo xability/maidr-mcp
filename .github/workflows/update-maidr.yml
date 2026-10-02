@@ -62,7 +62,8 @@ on:
     # payload is not read.
     types: [maidr-released, py-maidr-released]
 
-# Each job asks for what it needs: contents: write in `land`, issues: write in `report`.
+# Each job asks for what it needs: contents: write in `land`, issues: write in `report`. The
+# actions are pinned to commits, since they run beside those tokens; raise them deliberately.
 permissions: {}
 
 # The automatic runs one at a time, queued rather than cancelled, so no run stops between its
@@ -95,10 +96,10 @@ jobs:
       passing: ${{ steps.provenance.outputs.passing }}
       failed_step: ${{ steps.failed.outputs.step }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           python-version: "3.12"
           enable-cache: false
@@ -119,7 +120,7 @@ jobs:
       - name: Look for open issues about the update
         id: gate
         if: steps.update.outcome == 'success'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         env:
           CHANGED: ${{ steps.update.outputs.changed }}
           TITLE: ${{ steps.update.outputs.issue_title }}
@@ -156,7 +157,7 @@ jobs:
               core.setOutput('proceed', String(changed));
             }
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: steps.gate.outputs.proceed == 'true'
         with:
           node-version: "22"
@@ -248,8 +249,8 @@ jobs:
       failed_step: ${{ steps.failed.outputs.step }}
     steps:
       # The same commit `check` checked out: a scheduled or dispatched run checks out github.sha.
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           python-version: "3.12"
           enable-cache: false
@@ -318,10 +319,10 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           python-version: "3.12"
           enable-cache: false
@@ -348,7 +349,7 @@ jobs:
       - name: Open the issue, or bring the open one up to date
         id: open
         if: steps.issue.outcome == 'success'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         env:
           TITLE: ${{ steps.issue.outputs.title }}
           BODY_FILE: ${{ runner.temp }}/issue.md
@@ -387,7 +388,7 @@ jobs:
       - name: Close the issues this run settles
         if: always() && needs.check.outputs.js_new != ''
         continue-on-error: true
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         env:
           LANDED_JS: ${{ needs.land.outputs.pushed == 'true' && needs.check.outputs.js_new || '' }}
           LANDED_PY: ${{ needs.land.outputs.pushed == 'true' && needs.check.outputs.py_new || '' }}

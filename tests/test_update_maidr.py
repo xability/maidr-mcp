@@ -666,6 +666,16 @@ def test_no_job_shares_a_uv_cache():
     # setup-uv caches on GitHub's runners unless told not to, and `check` would then save a cache
     # its untrusted code had written under the very key `land` restores before it runs uv lock.
     text = WORKFLOW.read_text(encoding="utf-8")
-    steps = re.findall(r"uses: astral-sh/setup-uv@\S+\n((?: {8,}.*\n)*)", text)
+    steps = re.findall(r"uses: astral-sh/setup-uv@\S+(?: #.*)?\n((?: {8,}.*\n)*)", text)
     assert len(steps) == 3
     assert all(re.search(r"^\s+enable-cache: false$", step, re.MULTILINE) for step in steps)
+
+
+def test_every_action_is_pinned_to_a_commit():
+    # They run beside a token that can push to main or write issues, so a moved tag must not
+    # change what runs.
+    uses = re.findall(r"uses: (\S+)(.*)$", WORKFLOW.read_text(encoding="utf-8"), re.MULTILINE)
+    assert len(uses) == 10
+    for action, comment in uses:
+        assert re.fullmatch(r"[\w-]+/[\w-]+@[0-9a-f]{40}", action), action
+        assert re.fullmatch(r" # v\d+\.\d+\.\d+", comment), action
