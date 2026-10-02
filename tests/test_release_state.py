@@ -256,6 +256,16 @@ def test_a_failing_git_command_fails_the_job_rather_than_reading_as_main_moved(r
     )
 
 
+@pytest.mark.parametrize("unset", ["GITHUB_SHA", "GITHUB_OUTPUT"])
+def test_the_step_fails_without_what_github_sets(repo, tmp_path, monkeypatch, capsys, unset):
+    monkeypatch.setenv("GITHUB_SHA", repo.git("rev-parse", "HEAD"))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "github_output"))
+    monkeypatch.delenv(unset)
+    assert rs.main(lookup=PyPI(), sleep=lambda _: None) == 1
+    assert capsys.readouterr().out.startswith(f"::error::{unset} is not set")
+    assert not (tmp_path / "github_output").exists()
+
+
 def test_pypi_status_reads_pypis_json_for_the_version(monkeypatch):
     asked: list[str] = []
 
@@ -286,10 +296,14 @@ def test_the_release_job_runs_this_script():
     # The step was shell, untested, once; it stays this one line.
     workflow = WORKFLOW.read_text(encoding="utf-8")
     step = re.search(
-        r"^ +- name: Find where the release stands\n +id: state\n +run: (.*)\n", workflow, re.M
+        r"^( +)- name: Find where the release stands\n +id: state\n +run: (.*)\n(.*)\n",
+        workflow,
+        re.M,
     )
     assert step, "release.yml has no state step"
-    assert step[1] == "uv run --no-project python scripts/release_state.py"
+    assert step[2] == "uv run --no-project python scripts/release_state.py"
+    # Nothing after run: either, such as a continue-on-error that would undo its failing.
+    assert re.match(rf"{step[1]}(- |# )", step[3]), step[3]
     # The later steps read only what the script writes.
     assert set(re.findall(r"steps\.state\.outputs\.(\w+)", workflow)) == {
         "resume",

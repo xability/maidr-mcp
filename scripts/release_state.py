@@ -134,21 +134,28 @@ def where(sha: str, lookup: Lookup = pypi_status, sleep: Sleep = time.sleep) -> 
     return {}
 
 
-def write_outputs(values: dict[str, str]) -> None:
-    """Hands ``values`` to the next steps when run in GitHub Actions, and logs them."""
+def write_outputs(path: str, values: dict[str, str]) -> None:
+    """Hands ``values`` to the next steps through the file at ``path``, and logs them."""
     lines = [f"{key}={value}\n" for key, value in values.items()]
     for line in lines:
         log(line.rstrip("\n"))
-    path = os.environ.get("GITHUB_OUTPUT")
-    if path:
-        with open(path, "a", encoding="utf-8") as out:
-            out.write("".join(lines))
+    with open(path, "a", encoding="utf-8") as out:
+        out.write("".join(lines))
 
 
 def main(lookup: Lookup = pypi_status, sleep: Sleep = time.sleep) -> int:
     sha = os.environ.get("GITHUB_SHA", "")
     if not sha:
         print("::error::GITHUB_SHA is not set, so there is no commit to find the release of.")
+        return 1
+    # Without it the later steps would read no output at all, which is the "version as usual"
+    # case, so a lost resume would leave a tagged release off PyPI.
+    output = os.environ.get("GITHUB_OUTPUT", "")
+    if not output:
+        print(
+            "::error::GITHUB_OUTPUT is not set, so the next steps could not read where the "
+            "release stands."
+        )
         return 1
     try:
         outputs = where(sha, lookup, sleep)
@@ -162,9 +169,12 @@ def main(lookup: Lookup = pypi_status, sleep: Sleep = time.sleep) -> int:
             "Re-run this job."
         )
         return 1
-    write_outputs(outputs)
+    write_outputs(output, outputs)
     return 0
 
 
 if __name__ == "__main__":
+    # A runner's stdout is a pipe, which Python buffers; line by line, the notices land in the
+    # log in order with the logged tries.
+    sys.stdout.reconfigure(line_buffering=True)
     sys.exit(main())
