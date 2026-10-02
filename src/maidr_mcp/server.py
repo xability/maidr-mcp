@@ -350,7 +350,7 @@ def build_server(relay: Relay | None = None) -> MCPServer:
         "while the host shows a dialog of its own. When the result says focused: true, tell them "
         "their focus moved, and into which chart. focused: false means it could not -- Safari "
         "keeps a chart in a frame from taking focus without the reader's own key or click, and "
-        "maidr moves focus for you at most once every 10 seconds on the page -- and the move "
+        "maidr moves focus for you at most once every 10 seconds in that chart -- and the move "
         'waits for them to Tab in. applied "on-next-focus" with focused: true means their focus '
         "moved in, but their braille field reopened there and holds the move until they close "
         'it. Whenever the result is not applied "now", tell them what its message says, and do '
@@ -418,7 +418,7 @@ def build_server(relay: Relay | None = None) -> MCPServer:
         "When the result says focused: true, tell them their focus moved, and into which chart. "
         "focused: false means it could not -- Safari keeps a chart in a frame from taking focus "
         "without the reader's own key or click, and maidr moves focus for you at most once every "
-        "10 seconds on the page -- and the command waits for them to Tab in. A result of applied "
+        "10 seconds in that chart -- and the command waits for them to Tab in. A result of applied "
         '"queued" has not run yet either: it waits its turn behind what was kept for the reader, '
         "has no `modes`, and maidr_list_commands counts it in `pending` until it runs. applied "
         '"on-next-focus" while the reader is in the chart -- with focused: true, their focus '

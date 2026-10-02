@@ -385,7 +385,8 @@ document.addEventListener(
     // Nor a focus the browser refused the frame: WebKit keeps a framed chart from taking focus
     // without the reader's own key or click, and maidr, asked with focus: true, puts the focus
     // it gave the plot back at once. That is no entry, and what waits still waits. A Tab in,
-    // and maidr's own move in Chromium and Firefox, have the browser's focus by now.
+    // and maidr's own move in Chromium and Firefox, have the browser's focus by now. This
+    // e2e runs Chromium only; maidr's own e2e covers WebKit's refusal.
     if (!document.hasFocus()) return;
     // In the chart, maidr speaks for itself: the status line has said its piece. update_chart
     // putting a reader back in says the change once their focus is in.

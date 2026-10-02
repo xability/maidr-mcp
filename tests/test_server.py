@@ -112,6 +112,16 @@ def test_the_instructions_say_when_to_take_the_reader_into_the_chart():
     assert "holds a move kept for them, once they close braille" in INSTRUCTIONS
 
 
+def test_a_focus_the_browser_refused_the_view_is_no_entry():
+    # WebKit keeps a framed chart from taking focus; maidr then puts back the focus it gave the
+    # plot. The view must not take that for the reader entering and wipe the status line. Only
+    # WebKit reaches this, which the e2e (Chromium) cannot, so pin the guard here.
+    html = view_html()
+    entry = html.index("if (chart.contains(event.relatedTarget)) return;")
+    refused = html.index("if (!document.hasFocus()) return;", entry)
+    assert refused < html.index('updated = "";', refused)
+
+
 def test_the_view_tells_the_reader_when_the_model_left_something_waiting():
     html = view_html()
     assert '<p id="status" role="status">' in html
