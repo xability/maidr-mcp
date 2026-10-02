@@ -679,3 +679,20 @@ def test_every_action_is_pinned_to_a_commit():
     for action, comment in uses:
         assert re.fullmatch(r"[\w-]+/[\w-]+@[0-9a-f]{40}", action), action
         assert re.fullmatch(r" # v\d+\.\d+\.\d+", comment), action
+
+
+def test_the_update_runs_what_ci_yml_runs():
+    # A push made with GITHUB_TOKEN does not start ci.yml, so `check` runs its checks itself: a
+    # check added to ci.yml's test or e2e job must be added there too. Its docker job is left
+    # out, since the image installs py-maidr afresh from PyPI whatever uv.lock says.
+    ci = (WORKFLOW.parent / "ci.yml").read_text(encoding="utf-8").split("\n  docker:\n")[0]
+    check = WORKFLOW.read_text(encoding="utf-8").split("\n  land:\n")[0]
+    runs = re.findall(r"^\s+(?:- )?run: (.+)$", ci, re.MULTILINE)
+    pythons = re.findall(r'"(\d+\.\d+)"', re.search(r"python: \[(.*)\]", ci).group(1))
+    assert "uv run pytest -q" in runs and pythons
+    for run in runs:
+        if run == "uv run pytest -q":
+            for python in pythons:
+                assert f"uv run --isolated --locked --python {python} pytest -q" in check
+        else:
+            assert run in check, run
