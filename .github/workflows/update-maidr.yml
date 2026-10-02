@@ -77,7 +77,9 @@ concurrency:
 
 jobs:
   check:
-    # Every job here runs from main only, each by a condition of its own; `land` says why.
+    # Every job here runs from main only, each by a condition of its own; `land` says why. This
+    # one holds no token that can write, but off main it would spend up to an hour checking
+    # versions that nothing would land or report, since `land` and `report` do not run there.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 60
