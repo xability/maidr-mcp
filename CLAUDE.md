@@ -25,7 +25,7 @@ src/maidr_mcp/
 └─ __main__.py   # CLI: Streamable HTTP (stateless, CORS, optional token) or stdio
 tests/            # pytest, in-process through mcp.Client
 e2e/              # Playwright driver against ext-apps' basic-host
-scripts/          # update_maidr.py raises the two maidr pins (update-maidr.yml); smoke_wheel.py runs a built wheel (ci.yml)
+scripts/          # update_maidr.py raises the two maidr pins (update-maidr.yml); smoke_wheel.py runs a built wheel (ci.yml); release_state.py finds where a release stands (release.yml)
 ```
 
 ## Principles
