@@ -79,3 +79,15 @@ jobs:
           cat locked.log
           grep -q '/mcp/<redacted>' locked.log
           if grep -q "$token" locked.log; then echo "the token is in the log"; exit 1; fi
+
+  package:
+    # What PyPI gets: the wheel, installed on its own and run as the MCP Registry tells a host
+    # to, serves a chart and its view.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv build
+      - run: uv run --no-project --isolated --with dist/*.whl python scripts/smoke_wheel.py
