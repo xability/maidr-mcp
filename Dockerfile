@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+# The MCP Registry lists the image under server.json's name only if the image carries it.
+LABEL io.modelcontextprotocol.server.name="io.github.xability/maidr-mcp"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     MPLBACKEND=Agg \

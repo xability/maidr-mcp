@@ -25,7 +25,7 @@ src/maidr_mcp/
 └─ __main__.py   # CLI: Streamable HTTP (stateless, CORS, optional token) or stdio
 tests/            # pytest, in-process through mcp.Client
 e2e/              # Playwright driver against ext-apps' basic-host
-scripts/          # update_maidr.py: raises the two maidr pins, for update-maidr.yml
+scripts/          # update_maidr.py raises the two maidr pins (update-maidr.yml); smoke_wheel.py runs a built wheel (ci.yml)
 ```
 
 ## Principles
@@ -38,4 +38,15 @@ scripts/          # update_maidr.py: raises the two maidr pins, for update-maidr
 
 ## Git
 
-Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `ci:`, `chore:`), imperative mood, lower case. One logical change per commit. Work on a branch; `main` takes pull requests, and the `fix(deps):` and `chore(deps):` commits `update-maidr.yml` pushes once its checks pass.
+Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `ci:`, `chore:`), imperative mood, lower case. One logical change per commit. Work on a branch; `main` takes pull requests, and the commits two workflows push once their checks pass: `update-maidr.yml`'s `fix(deps):` and `chore(deps):` updates, and `release.yml`'s `chore(release):`. The type decides the release, below.
+
+## Release
+
+`.github/workflows/release.yml` releases `main` with python-semantic-release (configured in `pyproject.toml`), Mondays at 17:53 UTC, after maidr (15:00) and py-maidr (16:00) and the `update-maidr.yml` runs that raise the pins from them, or when run by hand.
+
+- **What releases.** `feat:` raises the minor version, `fix:` and `perf:` the patch; other types release nothing. It stays 0.x: a breaking change raises the minor version too.
+- **The gate.** Scheduled runs do nothing until the repository variable `RELEASE_ENABLED` is `true`, set once PyPI trusts the workflow; before that, each would tag a version PyPI then refuses. A run by hand always runs.
+- **What a release does.** ci.yml first, called as a pull request runs it: the tests, `e2e/run.sh`, the image, and the wheel run as a host runs it. Then, if `main` is still the commit they passed on, it stamps the version into `pyproject.toml`, `server.json` (three places) and `uv.lock`, writes `CHANGELOG.md`, commits, tags `vX.Y.Z` and makes the GitHub release; if `main` moved on, it starts a new run for the new `main` instead. Then it publishes `maidr-mcp` to PyPI (trusted publishing), `ghcr.io/xability/maidr-mcp:X.Y.Z` and `:latest`, and, once both are out, `server.json` to the MCP Registry as `io.github.xability/maidr-mcp`. Never edit those versions or `CHANGELOG.md` by hand.
+- **A failed run.** Fix the cause and use "Re-run failed jobs" on that run, whichever job failed. Re-run, the release job finishes a release an earlier attempt tagged but PyPI does not have yet. A new run starts from the tag and publishes nothing.
+- **Pin commits decide what releases.** The maidr.js pin (`MAIDR_JS_VERSION`) ships inside the package and the image, so a commit that raises it, `update-maidr.yml`'s included, is `fix(deps): ...`: the next weekly run cuts a patch release that carries it, where a `chore:` commit would never reach users. py-maidr is not pinned for users: the package and the image install the newest `maidr>=1.26,<2`, so a commit that only moves it in `uv.lock` changes what CI tests, not what users get, and is `chore(deps): ...`, which releases nothing.
+- **The registry name is proven twice.** `<!-- mcp-name: io.github.xability/maidr-mcp -->` in `README.md` (PyPI's long description) and the `io.modelcontextprotocol.server.name` label in the `Dockerfile`. `tests/test_release.py` keeps both, and `server.json`'s versions, in step.

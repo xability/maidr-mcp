@@ -1,5 +1,7 @@
 # maidr-mcp
 
+<!-- mcp-name: io.github.xability/maidr-mcp -->
+
 An [MCP](https://modelcontextprotocol.io) server that shows accessible [maidr](https://maidr.ai) charts inside ChatGPT and Claude conversations, and lets the conversation's model move the reader through them and run the chart's commands for them.
 
 The model calls `show_chart` with the data, and the chart appears in the conversation as an [MCP App](https://modelcontextprotocol.io/extensions/apps). A blind or low-vision reader Tabs into it and explores it the way they explore any maidr chart: arrow keys, screen reader, sonification, braille. Three things then happen through the model:
@@ -60,6 +62,14 @@ The model reads every layer's points with `maidr_get_layer_data`. Where the last
 
 ## Use it
 
+maidr-mcp is published three ways, at the same version:
+
+- **PyPI:** [`maidr-mcp`](https://pypi.org/project/maidr-mcp/), run with [uv](https://docs.astral.sh/uv/). `uvx maidr-mcp` serves HTTP at `127.0.0.1:8000/mcp`; `uvx maidr-mcp --stdio` serves a host that starts the server itself. `uvx maidr-mcp@latest` takes the newest release rather than one uv has cached.
+- **Container image:** `ghcr.io/xability/maidr-mcp`, tagged with each version and `latest`. It serves HTTP at `/mcp` on port 8000.
+- **MCP Registry:** `io.github.xability/maidr-mcp`, for clients that add servers from the [registry](https://registry.modelcontextprotocol.io).
+
+> **Until the first release.** None of the three exists before the first release is published. Until then, run the server from the repository with `uvx --from git+https://github.com/xability/maidr-mcp maidr-mcp` wherever this page says `uvx maidr-mcp`, and build the image yourself with `docker build -t maidr-mcp .` and run `maidr-mcp` in place of `ghcr.io/xability/maidr-mcp`.
+
 What the server needs depends on how the host reaches it:
 
 | Host | How it connects | What the server needs |
@@ -73,9 +83,9 @@ What the server needs depends on how the host reaches it:
 ```bash
 # Make a token once, and keep it: it is the <token> in each host's URL below.
 export MAIDR_MCP_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-uvx --from git+https://github.com/xability/maidr-mcp maidr-mcp --host 0.0.0.0 --port 8000
+uvx maidr-mcp --host 0.0.0.0 --port 8000
 # or
-docker build -t maidr-mcp . && docker run -p 8000:8000 -e MAIDR_MCP_TOKEN maidr-mcp
+docker run -p 8000:8000 -e MAIDR_MCP_TOKEN ghcr.io/xability/maidr-mcp
 ```
 
 The endpoint is `/mcp`, over Streamable HTTP, and with a token also `/mcp/<token>`.
@@ -117,7 +127,7 @@ A request carries the token one of two ways:
 **The ChatGPT desktop app's own MCP servers.** The [desktop app can start a local server itself](https://learn.chatgpt.com/docs/extend/mcp). Open Settings > MCP servers > Add server, choose STDIO, and give it this command, which needs [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uvx --from git+https://github.com/xability/maidr-mcp maidr-mcp --stdio
+uvx maidr-mcp --stdio
 ```
 
 The desktop app shares this configuration with the Codex CLI and IDE extension. There are two caveats:
@@ -182,7 +192,7 @@ bash e2e/run.sh
 
 ### How maidr releases reach maidr-mcp
 
-- **maidr.js,** in the chart view, is the version `MAIDR_JS_VERSION` in `server.py` names. `update-maidr.yml` raises it within about an hour of an npm release, once the checks below pass, so an install or image made from `main` after that loads it.
+- **maidr.js,** in the chart view, is the version `MAIDR_JS_VERSION` in `server.py` names. `update-maidr.yml` raises it within about an hour of an npm release, once the checks below pass, so an install or image made from `main` after that loads it, and the next weekly release takes it to PyPI and GHCR.
 - **py-maidr,** which draws the chart, is resolved afresh by every `uvx` or Docker install, within `maidr>=1.26,<2`, so a new install has a release as soon as PyPI does. `uv.lock`, which the same workflow raises, pins the py-maidr that CI and a checkout test against.
 
 `.github/workflows/update-maidr.yml` checks npm and PyPI every hour. A new maidr.js must carry npm provenance from maidr's release workflow, with a Sigstore signature that `npm audit signatures` verifies. Then ruff, pytest on Python 3.10 and 3.13, and `e2e/run.sh` run against the new versions, and only when all of them pass does the workflow commit them to `main`: as `fix(deps):` when the maidr.js pin moves, since that ships to users, and as `chore(deps):` when only `uv.lock` does. A maidr.js that changes its runnable commands fails `e2e/run.sh` rather than shipping with a stale `RunnableCommand`. When a check fails, nothing is pushed, and an issue names the versions, the step, and the run. A failure that may pass next time, such as a download or the browser's install, is tried again every hour for a day; one that would only repeat, such as a check failing on the new versions, holds them until the issue is closed or the workflow is run by hand. The issue closes itself once an update at least as new reaches `main`. Every update pairs npm's latest maidr.js with PyPI's newest py-maidr, so while a maidr.js release fails, a new py-maidr is tried only with it and `uv.lock` waits too; the issue says how to raise py-maidr alone, by running the workflow by hand with the maidr.js `main` already loads.

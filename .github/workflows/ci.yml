@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # release.yml runs these checks before it tags a release.
+  workflow_call:
 
 permissions:
   contents: read
@@ -15,8 +17,8 @@ jobs:
       matrix:
         python: ["3.10", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --locked
@@ -29,11 +31,11 @@ jobs:
     # answered by maidr inside it, the reader hears the moves, and the host gets the position.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
       - name: Install Playwright's Chromium
@@ -44,7 +46,7 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: docker build -t maidr-mcp .
       - name: The image serves the tools
         run: |
@@ -79,3 +81,15 @@ jobs:
           cat locked.log
           grep -q '/mcp/<redacted>' locked.log
           if grep -q "$token" locked.log; then echo "the token is in the log"; exit 1; fi
+
+  package:
+    # What PyPI gets: the wheel, installed on its own and run as the MCP Registry tells a host
+    # to, serves a chart and its view.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: "3.12"
+      - run: uv build
+      - run: uv run --no-project --isolated --with dist/*.whl python scripts/smoke_wheel.py
