@@ -36,8 +36,17 @@ JS_NEXT = bumped(JS_PIN)
 PY_NEXT = bumped(PY_LOCKED)
 
 
-def npm(version: str, *, provenance=True, repository=um.MAIDR_REPOSITORY, built=b"tarball"):
+def npm(
+    version: str,
+    *,
+    provenance=True,
+    repository=um.MAIDR_REPOSITORY,
+    path=um.MAIDR_RELEASE_WORKFLOW,
+    ref=um.MAIDR_RELEASE_REF,
+    built=b"tarball",
+):
     """What the registry serves for a maidr release: its document and its attestations."""
+    workflow = {"repository": repository, "path": path, "ref": ref}
     served = hashlib.sha512(b"tarball").digest()
     statement = {
         "subject": [
@@ -46,9 +55,7 @@ def npm(version: str, *, provenance=True, repository=um.MAIDR_REPOSITORY, built=
                 "digest": {"sha512": hashlib.sha512(built).hexdigest()},
             }
         ],
-        "predicate": {
-            "buildDefinition": {"externalParameters": {"workflow": {"repository": repository}}}
-        },
+        "predicate": {"buildDefinition": {"externalParameters": {"workflow": workflow}}},
     }
     dist = {"integrity": "sha512-" + base64.b64encode(served).decode()}
     if provenance:
@@ -339,6 +346,9 @@ def test_a_release_with_maidr_provenance_passes():
     [
         npm(JS_NEXT, provenance=False),  # published without --provenance
         npm(JS_NEXT, repository="https://github.com/someone/maidr"),  # from another repository
+        npm(JS_NEXT, path=".github/workflows/someone.yml"),  # by another of maidr's workflows
+        npm(JS_NEXT, ref="refs/heads/someone"),  # from another branch of maidr's
+        npm(JS_NEXT, path=None),  # by a workflow the statement does not name
         npm(JS_NEXT, built=b"another tarball"),  # for a tarball npm does not serve
     ],
 )

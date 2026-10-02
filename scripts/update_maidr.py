@@ -40,8 +40,11 @@ ROOT = Path(__file__).resolve().parent.parent
 SERVER = Path("src/maidr_mcp/server.py")
 LOCK = Path("uv.lock")
 REGISTRY = "https://registry.npmjs.org"
-# Where maidr's release workflow runs, as the provenance of each maidr.js it publishes names it.
+# maidr's release workflow, as the provenance of each maidr.js it publishes names it: its
+# repository, its file, and the branch semantic-release releases from (maidr's .releaserc.json).
 MAIDR_REPOSITORY = "https://github.com/xability/maidr"
+MAIDR_RELEASE_WORKFLOW = ".github/workflows/release.yml"
+MAIDR_RELEASE_REF = "refs/heads/main"
 SLSA_PROVENANCE = "https://slsa.dev/provenance/v1"
 # Every issue title starts with it. update-maidr.yml closes the bot's open issues that do.
 TITLE_PREFIX = "Automatic maidr update"
@@ -171,11 +174,12 @@ def check_provenance(version: str, fetch: Fetch = fetch_json) -> None:
     """Refuses a maidr.js that npm does not say maidr's release workflow built.
 
     maidr publishes with --provenance, so every release carries a SLSA provenance statement:
-    which repository's workflow built it, and the digest of the tarball it built. This reads it
-    as the registry serves it, and requires that it names maidr's repository and the tarball npm
-    serves for this version. It does not check the statement's Sigstore signature itself (npm
-    audit signatures does, for an installed package). What it turns away is a release published
-    any other way: by hand, from another repository, or with a stolen token.
+    which workflow built it, in which repository and on which branch, and the digest of the
+    tarball it built. This reads it as the registry serves it, and requires that it names maidr's
+    release workflow on main and the tarball npm serves for this version. It does not check the
+    statement's Sigstore signature itself (npm audit signatures does, for an installed package).
+    What it turns away is a release published any other way: by hand, from another repository,
+    from another workflow or branch of maidr's, or with a stolen token.
     """
     version = checked(version, "the maidr.js version")
     doc = fetch(f"{REGISTRY}/maidr/{version}")
@@ -212,12 +216,13 @@ def check_provenance(version: str, fetch: Fetch = fetch_json) -> None:
             for subject in (subjects if isinstance(subjects, list) else [])
         )
         workflow = _get(statement, "predicate", "buildDefinition", "externalParameters", "workflow")
-        if built and _get(workflow, "repository") == MAIDR_REPOSITORY:
+        named = tuple(_get(workflow, key) for key in ("repository", "path", "ref"))
+        if built and named == (MAIDR_REPOSITORY, MAIDR_RELEASE_WORKFLOW, MAIDR_RELEASE_REF):
             return
-        log(f"maidr@{version}'s provenance names {str(_get(workflow, 'repository'))[:200]!r}")
+        log(f"maidr@{version}'s provenance names {str(named)[:300]!r}")
     raise Refused(
-        f"maidr.js {version}'s npm provenance does not say {MAIDR_REPOSITORY} built the "
-        "tarball npm serves"
+        f"maidr.js {version}'s npm provenance does not say {MAIDR_RELEASE_WORKFLOW} on "
+        f"{MAIDR_RELEASE_REF} of {MAIDR_REPOSITORY} built the tarball npm serves"
     )
 
 
@@ -351,7 +356,11 @@ STEPS = {
         "",
     ),
     "gate": ("looking for an open issue about these versions", ""),
-    "provenance": ("checking the new maidr.js's npm provenance", ""),
+    "provenance": (
+        "checking the new maidr.js's npm provenance",
+        "If maidr now publishes from another workflow or branch, `MAIDR_RELEASE_WORKFLOW` and "
+        "`MAIDR_RELEASE_REF` in `scripts/update_maidr.py` name the ones it accepts.",
+    ),
     "sync": ("`uv sync --locked`", REPRODUCE),
     "lint": ("`uv run ruff check .`", ""),
     "format": ("`uv run ruff format --check .`", ""),
@@ -485,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "provenance":
             check_provenance(args.maidr_js)
-            log(f"maidr.js {args.maidr_js} was built by {MAIDR_REPOSITORY}")
+            log(f"maidr.js {args.maidr_js} was built by {MAIDR_REPOSITORY}'s release workflow")
             return 0
         change = update(
             args.root,
