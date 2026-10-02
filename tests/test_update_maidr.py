@@ -715,6 +715,13 @@ def test_every_job_runs_from_main_only():
         assert "||" not in top, name
 
 
+def test_the_report_runs_when_check_or_land_fails():
+    # GitHub reads a condition that calls no status function as success() && it, so without
+    # failure() `report` would be skipped by the very failures it is there to report.
+    [condition] = job_conditions()["report"]
+    assert "failure()" in condition
+
+
 def test_the_update_runs_what_ci_yml_runs():
     # A push made with GITHUB_TOKEN does not start ci.yml, so `check` runs its checks itself: a
     # check added to ci.yml's test or e2e job must be added there too. Its docker job is left
