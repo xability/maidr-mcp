@@ -395,6 +395,43 @@ try {
     live,
   );
 
+  // Braille, the reader's other way through the chart: b brings up maidr's braille display with
+  // the caret on the reader's point, the arrow keys move both and are announced, b puts it away.
+  const brailleArea = () =>
+    view.evaluate(() => {
+      const el = document.activeElement;
+      return el?.tagName === "TEXTAREA" ? { value: el.value, caret: el.selectionStart } : null;
+    });
+  await page.keyboard.press("b");
+  await sleep(600);
+  const brailleOn = await brailleArea();
+  const brailleModes = (await callTool("maidr_list_commands", { viewId })).modes;
+  check(
+    "b brings up the braille display, with the caret on the reader's bar",
+    /^[\u2800-\u28FF]{4}/.test(brailleOn?.value ?? "") && brailleOn.caret === 0 && brailleModes?.braille === true,
+    { braille: brailleOn, modes: brailleModes },
+  );
+  await page.keyboard.press("ArrowRight");
+  await sleep(900);
+  const brailleMoved = await brailleArea();
+  const brailleHeard = await announced(view);
+  check(
+    "  ArrowRight moves the braille caret to the next bar and announces it",
+    brailleMoved?.caret === 1 && /Sun/.test(brailleHeard) && /76/.test(brailleHeard),
+    { braille: brailleMoved, announced: brailleHeard },
+  );
+  await page.keyboard.press("b");
+  await sleep(600);
+  const brailleOff = (await callTool("maidr_list_commands", { viewId })).modes;
+  const backInChart = await view.evaluate(
+    () => document.hasFocus() && document.getElementById("chart").contains(document.activeElement),
+  );
+  check(
+    "  and b puts it away, with the reader still in the chart",
+    (await brailleArea()) === null && brailleOff?.braille === false && backInChart,
+    { modes: brailleOff, inChart: backInChart },
+  );
+
   const here = await callTool("maidr_navigate", { viewId, layerId: layer.layerId, ...low.target });
   await sleep(400);
   const now = await announced(view);
