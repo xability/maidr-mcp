@@ -68,8 +68,6 @@ maidr-mcp is published three ways, at the same version:
 - **Container image:** `ghcr.io/xability/maidr-mcp`, tagged with each version and `latest`. It serves HTTP at `/mcp` on port 8000.
 - **MCP Registry:** `io.github.xability/maidr-mcp`, for clients that add servers from the [registry](https://registry.modelcontextprotocol.io).
 
-> **Until the first release.** None of the three exists before the first release is published. Until then, run the server from the repository with `uvx --from git+https://github.com/xability/maidr-mcp maidr-mcp` wherever this page says `uvx maidr-mcp`, and build the image yourself with `docker build -t maidr-mcp .` and run `maidr-mcp` in place of `ghcr.io/xability/maidr-mcp`.
-
 What the server needs depends on how the host reaches it:
 
 | Host | How it connects | What the server needs |
