@@ -7,6 +7,7 @@ are fakes, so nothing here reaches the network or waits.
 
 from __future__ import annotations
 
+import http.client
 import importlib.util
 import os
 import re
@@ -208,6 +209,8 @@ def test_a_tag_on_a_commit_without_a_parent_is_passed_over(repo, job):
     [
         ((503, 404), "resume=v0.2.0\n"),
         ((urllib.error.URLError("timed out"), 200), "done=true\n"),
+        # http.client's errors for a garbled answer, which are not OSErrors.
+        ((http.client.BadStatusLine(""), http.client.IncompleteRead(b""), 404), "resume=v0.2.0\n"),
         ((429, 502, 404), "resume=v0.2.0\n"),
     ],
 )
