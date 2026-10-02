@@ -98,6 +98,17 @@ def test_the_instructions_say_when_to_call_each_model_tool():
     assert "reader.position is live" in INSTRUCTIONS
 
 
+def test_the_instructions_say_when_to_take_the_reader_into_the_chart():
+    # Only when they asked, never because they left, and never over the host's own dialog.
+    assert "pass focus: true" in INSTRUCTIONS
+    assert "because they left the chart" in INSTRUCTIONS
+    assert "dialog of its own" in INSTRUCTIONS
+    # What to tell them, either way, and that "queued" has not happened yet.
+    assert "focused: true, tell them their focus moved, and into which chart" in INSTRUCTIONS
+    assert "focused: false" in INSTRUCTIONS and "Tab in" in INSTRUCTIONS
+    assert '"queued"' in INSTRUCTIONS
+
+
 def test_the_view_tells_the_reader_when_the_model_left_something_waiting():
     html = view_html()
     assert '<p id="status" role="status">' in html
@@ -204,12 +215,43 @@ async def test_the_command_tools_keep_maidrs_names_arguments_and_hints():
     assert set(listing.input_schema["properties"]) == {"viewId", "chartId"}
     assert listing.input_schema["required"] == ["viewId"]
     assert listing.annotations.read_only_hint is True
-    assert set(running.input_schema["properties"]) == {"viewId", "command", "chartId"}
+    assert set(running.input_schema["properties"]) == {"viewId", "command", "chartId", "focus"}
     assert sorted(running.input_schema["required"]) == ["command", "viewId"]
     # Toggles flip a mode: running one is not read-only, nor destructive.
     assert running.annotations.read_only_hint is False
     assert running.annotations.destructive_hint is False
     assert "on-next-focus" in running.description
+    assert '"queued"' in running.description
+
+
+async def test_the_moving_tools_take_maidrs_focus_with_its_guidance():
+    async with Client(build_server()) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+    navigate = tools["maidr_navigate"].input_schema
+    assert set(navigate["properties"]) == {
+        "viewId",
+        "layerId",
+        "chartId",
+        "row",
+        "col",
+        "pointIndex",
+        "focus",
+    }
+    for name in ("maidr_navigate", "maidr_run_command"):
+        tool = tools[name]
+        focus = tool.input_schema["properties"]["focus"]
+        assert {"type": "boolean"} in focus["anyOf"], name
+        assert "focus" not in tool.input_schema["required"], name
+        # maidr's own description of the input, unchanged.
+        assert focus["description"] == (
+            "Move the reader's keyboard focus into the chart, if it is not there, so this "
+            "happens now. Only when they asked for that. Default false."
+        )
+        assert "Pass focus: true only when the reader asked" in tool.description, name
+        assert "never just because they left the chart" in tool.description, name
+        assert "tell them their focus moved, and into which chart" in tool.description, name
+        assert "focused: false means it could not" in tool.description, name
+        assert "10 seconds" in tool.description and "Safari" in tool.description, name
 
 
 async def test_run_command_offers_the_commands_maidr_runs():
@@ -257,6 +299,48 @@ async def test_the_command_tools_are_relayed_to_maidr_unchanged():
             client, view_id, "maidr_run_command", {"command": "autoplay_forward", "chartId": "c"}
         )
         assert ran["arguments"] == {"chartId": "c", "command": "autoplay_forward"}
+
+
+async def test_focus_reaches_maidr_only_when_given():
+    async with Client(build_server()) as client:
+        shown = await client.call_tool("show_chart", {"chart": BAR})
+        view_id = shown.structured_content["viewId"]
+        point = {"layerId": "L", "row": 0, "col": 1}
+
+        moved = await _relay_once(client, view_id, "maidr_navigate", point)
+        assert "focus" not in moved["arguments"]
+        for focus in (True, False):
+            moved = await _relay_once(client, view_id, "maidr_navigate", {**point, "focus": focus})
+            assert moved["arguments"] == {**point, "focus": focus}
+
+        ran = await _relay_once(client, view_id, "maidr_run_command", {"command": "toggle_text"})
+        assert "focus" not in ran["arguments"]
+        for focus in (True, False):
+            ran = await _relay_once(
+                client, view_id, "maidr_run_command", {"command": "toggle_text", "focus": focus}
+            )
+            assert ran["arguments"] == {"command": "toggle_text", "focus": focus}
+
+
+async def test_a_focus_that_is_not_a_boolean_never_reaches_the_view():
+    # maidr refuses anything but a boolean: the server's schema does too, rather than reading
+    # "no" or 1 as a focus move the model may not have meant.
+    relay = Relay(poll_seconds=0.1)
+    async with Client(build_server(relay)) as client:
+        shown = await client.call_tool("show_chart", {"chart": BAR})
+        view_id = shown.structured_content["viewId"]
+        for focus in ("true", "yes", "no", 1, 0, [], {}):
+            moved = await client.call_tool(
+                "maidr_navigate",
+                {"viewId": view_id, "layerId": "L", "pointIndex": 0, "focus": focus},
+            )
+            assert moved.is_error, focus
+            ran = await client.call_tool(
+                "maidr_run_command", {"viewId": view_id, "command": "toggle_text", "focus": focus}
+            )
+            assert ran.is_error, focus
+        polled = await client.call_tool("maidr_view_poll", {"viewId": view_id})
+    assert polled.structured_content["calls"] == []
 
 
 async def test_a_command_maidr_does_not_run_never_reaches_the_view():
