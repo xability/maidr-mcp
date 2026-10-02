@@ -261,9 +261,11 @@ async function relay() {
     for (const call of calls) {
       const result = call.tool === UPDATE ? await update(brought) : await run(call);
       // maidr keeps one move, the latest: a move it made at once leaves none waiting, and one it
-      // refused leaves the kept one as it was.
+      // refused leaves the kept one as it was. One kept with focused: true took the reader in,
+      // where braille that came back with them holds it; in the chart it is theirs, as after a
+      // Tab in (see the focusin handler), and maidr tells them of it.
       if (call.tool === "maidr_navigate" && result?.ok === true) {
-        moveWaiting = result.applied === "on-next-focus";
+        moveWaiting = result.applied === "on-next-focus" && result.focused !== true;
       }
       await app
         .callServerTool({ name: "maidr_view_reply", arguments: { viewId, callId: call.callId, result } })
@@ -330,11 +332,14 @@ function showStatus() {
   if (status.textContent !== text) status.textContent = text;
 }
 
-// maidr never moves the reader's focus, and the view moves it only to put a reader back in the
-// chart update_chart swapped (see update()). So a move or command the model makes while the
-// reader is outside the chart waits for them (maidr answers applied "on-next-focus") and happens
-// when they enter it. Until then the status line says so. maidr counts the waiting commands; it
-// keeps one waiting move, which it makes as soon as the reader enters the chart.
+// The view moves the reader's focus only to put a reader back in the chart update_chart swapped
+// (see update()). maidr moves it into the chart only when the model passes focus: true, because
+// the reader asked; the call is relayed unchanged, and the focus-in it makes is handled as a
+// Tab in. Otherwise a move or command the model makes while the reader is outside the chart
+// waits for them (maidr answers applied "on-next-focus", and with focus: true also focused:
+// false when it could not move their focus) and happens when they enter it. Until then the status
+// line says so. maidr counts the waiting commands; it keeps one waiting move, which it makes as
+// soon as the reader enters the chart.
 let moveWaiting = false;
 let watchingKept = false;
 let noticing;
@@ -373,8 +378,16 @@ document.addEventListener(
     refreshNotice();
     if (!ready || !chart.contains(event.target)) return;
     // Only an entry from outside: focus moving within the chart (maidr's braille field, a
-    // dialog handing focus back) must not wipe what update_chart has just said.
+    // dialog handing focus back) must not wipe what update_chart has just said. maidr taking
+    // the reader in for the model comes from the host page, as a Tab in does: relatedTarget is
+    // null, outside this document.
     if (chart.contains(event.relatedTarget)) return;
+    // Nor a focus the browser refused the frame: WebKit keeps a framed chart from taking focus
+    // without the reader's own key or click, and maidr, asked with focus: true, puts the focus
+    // it gave the plot back at once. That is no entry, and what waits still waits. A Tab in,
+    // and maidr's own move in Chromium and Firefox, have the browser's focus by now. This
+    // e2e runs Chromium only; maidr's own e2e covers WebKit's refusal.
+    if (!document.hasFocus()) return;
     // In the chart, maidr speaks for itself: the status line has said its piece. update_chart
     // putting a reader back in says the change once their focus is in.
     updated = "";

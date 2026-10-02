@@ -19,7 +19,7 @@ from maidr_mcp.relay import POLL_SECONDS, UNKNOWN_VIEW, Relay
 VIEW_URI = "ui://maidr/chart.html"
 SVG_META_KEY = "ai.maidr/svg"
 CDN = "https://cdn.jsdelivr.net"
-MAIDR_JS_VERSION = "4.12.0"
+MAIDR_JS_VERSION = "4.13.0"
 EXT_APPS_VERSION = "2.0.3"
 
 INSTRUCTIONS = """\
@@ -42,10 +42,22 @@ run returns. Tell them the command's "keys" from the listing, so they can press 
 next time. A command that is not runnable opens a dialog or text field only the reader can \
 use: give them its keys instead.
 
-If maidr_navigate or maidr_run_command answers applied "on-next-focus", the reader is typing to \
-you rather than in the chart: tell them it happens when they Tab back into the chart, which \
-the chart also tells them, and do not say it has happened. If one answers applied "blocked", \
-they have a MAIDR dialog open and nothing happened: tell them to close it first.
+A move or command made while the reader is typing to you rather than in the chart waits for \
+them: maidr_navigate and maidr_run_command answer applied "on-next-focus", and it happens when \
+they Tab back into the chart (or, when their braille field holds a move kept for them, once they \
+close braille: the message says which). Tell them so, as the chart also does, and do not say it \
+has happened. When they ask to be taken somewhere ("take me to March") or for something now \
+("play it now"), pass focus: true: maidr moves their keyboard focus into the chart and does it \
+there. Otherwise leave focus out, and let it wait. Never pass focus: true to pull the reader \
+back in because they left the chart, which they did on purpose, nor while the host shows a \
+dialog of its own, such as a confirmation: the chart cannot see the host's dialogs, and would \
+take their focus from one. When the result says focused: true, tell them their focus moved, and \
+into which chart. focused: false means it could not be moved (Safari keeps a chart in a \
+conversation from taking focus without the reader's own key or click, and maidr moves it at most \
+once every 10 seconds in that chart), and it waits for them to Tab in. Whenever the answer is \
+not applied "now", tell them what it says, and do not say it has happened: "queued" runs in \
+turn, after what waited for them. If one answers applied "blocked", they have a MAIDR dialog \
+open and nothing happened: tell them to close it first.
 
 The chart tells you where the reader is as model context, which arrives with their next \
 message. Within a turn it does not change, so it misses your own moves and commands, and the \
@@ -117,6 +129,18 @@ RunnableCommand = Literal[
     "tactile_zoom_in",
     "tactile_zoom_out",
     "tactile_reset_zoom",
+]
+# maidr's own `focus` input, with its description: strict, since maidr refuses anything but a
+# boolean, and a lax bool would take "no" for false and 1 for true. An explicit null, which maidr
+# also refuses, is taken as leaving focus out, as for every other optional argument here: some
+# models fill each optional argument they skip with null, and leaving it out moves no focus.
+Focus = Annotated[
+    bool | None,
+    Field(
+        strict=True,
+        description="Move the reader's keyboard focus into the chart, if it is not there, so this "
+        "happens now. Only when they asked for that. Default false.",
+    ),
 ]
 PollWait = Annotated[
     float,
@@ -316,10 +340,21 @@ def build_server(relay: Relay | None = None) -> MCPServer:
         name="maidr_navigate",
         title="Move the reader to a point",
         description="Runs maidr's maidr_navigate in the chart: moves the reader's cursor to one "
-        "point, "
-        "given as that point's target from maidr_get_layer_data, either row and col or pointIndex. "
-        "maidr announces it by speech, braille and sound at once when the reader is in the chart; "
-        'otherwise it answers applied "on-next-focus" and announces it when they next enter it.',
+        "point, given as that point's target from maidr_get_layer_data, either row and col or "
+        "pointIndex. maidr announces it by speech, braille and sound at once when the reader is "
+        'in the chart. Otherwise it answers applied "on-next-focus" and makes the move when they '
+        "next enter the chart -- unless you pass focus: true, which moves their keyboard focus "
+        "into the chart and makes the move there, announced as a keyboard move is. Pass focus: "
+        'true only when the reader asked to be taken there now, as in "take me to the highest '
+        'bar" -- never just because they left the chart, which they did on purpose, and not '
+        "while the host shows a dialog of its own. When the result says focused: true, tell them "
+        "their focus moved, and into which chart. focused: false means it could not -- Safari "
+        "keeps a chart in a frame from taking focus without the reader's own key or click, and "
+        "maidr moves focus for you at most once every 10 seconds in that chart -- and the move "
+        'waits for them to Tab in. applied "on-next-focus" with focused: true means their focus '
+        "moved in, but their braille field reopened there and holds the move until they close "
+        'it. Whenever the result is not applied "now", tell them what its message says, and do '
+        "not claim they are there.",
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False),
     )
     async def maidr_navigate(
@@ -329,6 +364,7 @@ def build_server(relay: Relay | None = None) -> MCPServer:
         row: int | None = None,
         col: int | None = None,
         pointIndex: int | None = None,  # noqa: N803
+        focus: Focus = None,
     ) -> dict[str, Any]:
         arguments = {
             "layerId": layerId,
@@ -336,6 +372,7 @@ def build_server(relay: Relay | None = None) -> MCPServer:
             "row": row,
             "col": col,
             "pointIndex": pointIndex,
+            "focus": focus,
         }
         return await relay.call(viewId, "maidr_navigate", _given(arguments))
 
@@ -373,8 +410,23 @@ def build_server(relay: Relay | None = None) -> MCPServer:
         "as reaching what the reader asked for takes, and check the `modes` each run returns. "
         'If the reader has a MAIDR dialog open, nothing runs (applied "blocked"). If they are '
         'not in the chart, it answers applied "on-next-focus" and the command runs when they '
-        "next enter the chart: tell them so, and do not claim it has happened. Keyboard focus "
-        "moves only as the command's own keys would move it.",
+        "next enter the chart: tell them so, and do not claim it has happened -- unless you pass "
+        "focus: true, which moves their keyboard focus into the chart, where the command runs "
+        "half a second after they hear where they are. Pass focus: true only when the reader "
+        'asked for it to happen now, as in "play it now" -- never just because they left the '
+        "chart, which they did on purpose, and not while the host shows a dialog of its own. "
+        "When the result says focused: true, tell them their focus moved, and into which chart. "
+        "focused: false means it could not -- Safari keeps a chart in a frame from taking focus "
+        "without the reader's own key or click, and maidr moves focus for you at most once every "
+        "10 seconds in that chart -- and the command waits for them to Tab in. A result of applied "
+        '"queued" has not run yet either: it waits its turn behind what was kept for the reader, '
+        "has no `modes`, and maidr_list_commands counts it in `pending` until it runs. applied "
+        '"on-next-focus" while the reader is in the chart -- with focused: true, their focus '
+        "moved in, or without it, they had just come back -- means their braille field reopened "
+        "there and holds a move kept for them, and the command waits behind that move until they "
+        "close braille, which toggle_braille does. Whenever the result is not applied "
+        '"now", tell them what its message says, and do not claim it has happened. Without '
+        "focus: true, keyboard focus moves only as the command's own keys would move it.",
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False),
     )
     async def maidr_run_command(
@@ -384,8 +436,9 @@ def build_server(relay: Relay | None = None) -> MCPServer:
             Field(description="A command id maidr_list_commands lists as runnable."),
         ],
         chartId: ChartId = None,  # noqa: N803
+        focus: Focus = None,
     ) -> dict[str, Any]:
-        arguments = {"chartId": chartId, "command": command}
+        arguments = {"chartId": chartId, "command": command, "focus": focus}
         return await relay.call(viewId, "maidr_run_command", _given(arguments))
 
     return server

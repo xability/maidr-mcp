@@ -16,6 +16,10 @@
 //    change in the status line. The reader Tabs in, and the model updates the chart with them
 //    in it; then a view that missed an update catches up. These count the page's views and
 //    follow the reader's focus in it, so they come before any other chart opens.
+//    Last in this page, the model takes the reader, typing in the host page, into the chart
+//    with focus: true, which maidr then will not repeat for 10 seconds; the run waits that out
+//    once. Last, because it leaves the reader in the chart and starts maidr's 10 seconds,
+//    which no later check of this page expects.
 // 3. Each other chart family, in a page of its own, read by maidr and moved through.
 // 4. Last, in a context of its own, a host made to cut the view's poll after a few seconds:
 //    the view falls back to short polls and still answers, update_chart included. Last, so
@@ -179,7 +183,7 @@ const chart = {
 
 // The other families, each with the layers maidr should read, what the reader's first ArrowRight
 // announces and, where maidr gives the first layer's points a target, what a model's move to its
-// last point announces. maidr 4.12.0 gives
+// last point announces. maidr gives
 // no targets for pie, violin, candlestick or trend-line points: the reader moves through them,
 // and the model reads them but cannot move the reader there.
 const families = [
@@ -592,6 +596,115 @@ try {
     waits.length > heldAt && waits.slice(heldAt).every((w) => w === 20) && revisions.at(-1) === 3,
     { waits: waits.slice(heldAt), revisions: revisions.slice(heldAt) },
   );
+
+  // The model takes the reader into the chart because they asked: from the host page, where they
+  // are typing, maidr moves their focus into the view's frame and makes the move there. The status
+  // line, which still says the chart changed, clears as on a Tab in. Then, within 10 seconds,
+  // maidr moves their focus nowhere again, so a reader who went back to the host is not pulled
+  // in: the move and command are kept, and the status line names them. After the 10 seconds, a
+  // command with focus takes them in again, behind what was kept. maidr before 4.13.0 takes no
+  // focus, and refuses these calls as "invalid input".
+  const noFocusHint = (result) =>
+    result?.error === "invalid input"
+      ? "the maidr.js the view loads takes no focus (maidr 4.13.0 is the first that does): check MAIDR_JS_VERSION or MAIDR_JS_FILE"
+      : undefined;
+  const hostFocus = () => page.evaluate(() => document.activeElement?.tagName);
+  const inChartFocus = () => view.evaluate(() => document.hasFocus() && document.getElementById("chart").contains(document.activeElement));
+  const fourth = await onlyChart();
+  const fourthPoints = (await callTool("maidr_get_layer_data", { viewId, layerId: fourth.layer?.layerId })).content?.points ?? [];
+  const thur = fourthPoints.find((p) => p.point?.x === "Thur");
+  const sat = fourthPoints.find((p) => p.point?.x === "Sat");
+  await page.click("textarea");
+  await page.keyboard.type(" take me to Thursday");
+  const typing = { host: await hostFocus(), view: await inChartFocus(), status: await notice() };
+  const takenAt = (await heard()).length;
+  const taken = await callTool("maidr_navigate", { viewId, layerId: fourth.layer?.layerId, ...thur?.target, focus: true });
+  const focusMovedAt = Date.now(); // maidr's 10 seconds started no later than this
+  await sleep(600);
+  check(
+    "maidr_navigate with focus: true takes a reader typing in the host page into the chart: applied now, focused true",
+    typing.host === "TEXTAREA" && !typing.view && taken.ok && taken.applied === "now" && taken.focused === true,
+    { typing, result: taken, hint: noFocusHint(taken) },
+  );
+  const takenTo = await shown();
+  check(
+    "  their focus is in the chart, in the view's frame",
+    (await hostFocus()) === "IFRAME" && (await inChartFocus()) && takenTo.onChart,
+    { host: await hostFocus(), view: takenTo.hasFocus, onChart: takenTo.onChart },
+  );
+  const takenHeard = (await heard()).slice(takenAt);
+  const takenLive = (await callTool("maidr_list_charts", { viewId })).content?.charts?.[0]?.reader;
+  check(
+    "  the point is announced, and maidr_list_charts says they are on it",
+    takenHeard.some((t) => /Thur/.test(t) && /62/.test(t)) && takenLive?.inChart === true && /Thur/.test(takenLive.position),
+    { heard: takenHeard, reader: takenLive },
+  );
+  check(
+    "  and the status line, which said the chart changed, is empty, as on a Tab in",
+    typing.status === "Chart updated: The Number of Tips by Day" && (await notice()) === "",
+    { before: typing.status, after: await notice() },
+  );
+  await page.keyboard.press("ArrowRight");
+  await sleep(900);
+  const onFromThere = await announced(view);
+  check("  and their arrow keys move on from there", /Fri/.test(onFromThere) && /19/.test(onFromThere), onFromThere);
+
+  // The reader goes back to the host page, and the model asks for their focus again at once.
+  await page.click("textarea");
+  await page.keyboard.type(" thanks");
+  const tooSoonMove = await callTool("maidr_navigate", { viewId, layerId: fourth.layer?.layerId, ...sat?.target, focus: true });
+  const tooSoon = /less than 10 seconds ago/.test(tooSoonMove.message) && /ask them first/.test(tooSoonMove.message);
+  check(
+    "within 10 seconds maidr moves their focus nowhere again: the move answers focused false, is kept, and the model is told to ask them",
+    Date.now() - focusMovedAt < 10_000 && tooSoonMove.ok && tooSoonMove.applied === "on-next-focus" && tooSoonMove.focused === false && tooSoon &&
+      (await hostFocus()) === "TEXTAREA" && !(await inChartFocus()),
+    { result: tooSoonMove, host: await hostFocus(), hint: noFocusHint(tooSoonMove) },
+  );
+  check(
+    "  and the status line tells the reader it waits",
+    await noticeComes(/^The assistant has a move waiting for you: Tab into the chart to hear it\.$/),
+    await notice(),
+  );
+  // Still inside the 10 seconds, or maidr would take them in: say so rather than fail on its answer.
+  const tooSoonRunAt = Date.now() - focusMovedAt;
+  const tooSoonRun = await callTool("maidr_run_command", { viewId, command: "toggle_sound", focus: true });
+  const keptBoth = await callTool("maidr_list_commands", { viewId });
+  check(
+    "  a command with focus: true is kept too, and the status line names the move and the command",
+    tooSoonRunAt < 10_000 &&
+      tooSoonRun.ok && tooSoonRun.applied === "on-next-focus" && tooSoonRun.focused === false && /less than 10 seconds ago/.test(tooSoonRun.message) &&
+      keptBoth.pending === 1 && keptBoth.reader?.inChart === false &&
+      (await noticeComes(/^The assistant has a move and a command waiting for you: Tab into the chart to hear them\.$/)),
+    { elapsed: tooSoonRunAt, result: tooSoonRun, pending: keptBoth.pending, status: await notice(), hint: noFocusHint(tooSoonRun) },
+  );
+
+  // Past the 10 seconds, a command with focus takes the reader in: it waits its turn behind the
+  // kept move and command. Two toggles of sound leave it on, as the checks after this expect.
+  await sleep(Math.max(0, focusMovedAt + 10_500 - Date.now()));
+  const queuedAt = (await heard()).length;
+  const queued = await callTool("maidr_run_command", { viewId, command: "toggle_sound", focus: true });
+  check(
+    "after 10 seconds maidr_run_command with focus: true takes them in: applied queued, focused true, no modes yet",
+    queued.ok && queued.applied === "queued" && queued.focused === true && queued.modes === undefined && (await inChartFocus()),
+    { result: queued, view: await inChartFocus(), hint: noFocusHint(queued) },
+  );
+  let afterQueued;
+  for (let i = 0; i < 30; i++) {
+    afterQueued = await callTool("maidr_list_commands", { viewId });
+    if (afterQueued.pending === 0 && afterQueued.modes?.sound === true) break;
+    await sleep(200);
+  }
+  const queuedHeard = (await heard()).slice(queuedAt);
+  const landedSat = queuedHeard.findIndex((t) => /Sat/.test(t) && /87/.test(t));
+  const soundOff = queuedHeard.findIndex((t, i) => i > landedSat && /sound is off/i.test(t));
+  const soundOn = queuedHeard.findIndex((t, i) => i > soundOff && /sound is on/i.test(t));
+  check(
+    "  the kept move lands, then the kept command runs and this one after it: sound goes off and back on",
+    landedSat >= 0 && soundOff > landedSat && soundOn > soundOff &&
+      afterQueued.pending === 0 && afterQueued.modes?.sound === true && afterQueued.reader?.inChart === true,
+    { heard: queuedHeard, pending: afterQueued.pending, modes: afterQueued.modes, reader: afterQueued.reader },
+  );
+  check("  and the status line is empty", (await notice()) === "", await notice());
 
   check("the reference host holds long polls, and the view keeps to them", waits.length > 0 && waits.every((w) => w === 20), waits);
   check("no console errors or CSP reports", problems.length === 0, problems);
