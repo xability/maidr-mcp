@@ -27,6 +27,10 @@ permissions:
 env:
   PSR_VERSION: "10.7.0"
 
+# setup-uv's cache is off in every job. ci.yml's e2e job runs ext-apps' npm packages,
+# installed afresh without a lockfile, and saves the uv cache under the key the release
+# job, which builds what PyPI gets with a token that can push, would restore.
+
 jobs:
   test:
     # A scheduled run does nothing until the repository variable RELEASE_ENABLED is
@@ -42,6 +46,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python }}
+          enable-cache: false
       - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ruff format --check .
@@ -55,6 +60,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          enable-cache: false
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -88,6 +94,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          enable-cache: false
       # A re-run of this job, after an earlier attempt pushed the tag and then failed,
       # finishes that release: its tag is on the release commit, whose parent is the commit
       # the tests passed on, and PyPI does not have the version yet. Otherwise, if main has
