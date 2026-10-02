@@ -87,7 +87,13 @@ jobs:
             if [ "$status" = 404 ]; then
               echo "resume=$tag" >> "$GITHUB_OUTPUT"
               exit 0
-            elif [ "$status" != 200 ]; then
+            elif [ "$status" = 200 ]; then
+              # A re-run of a release that went out: main is its release commit now, which
+              # is no reason to start another run.
+              echo "::notice::$tag, released from this commit, is already on PyPI. Nothing to do."
+              echo "done=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            else
               echo "::error::PyPI answered $status for maidr-mcp ${tag#v}, so whether $tag is published is unknown. Re-run this job."
               exit 1
             fi
@@ -108,7 +114,7 @@ jobs:
       # perf commit since the last tag it does nothing and says released=false.
       - name: Version, changelog, tag and GitHub release
         id: version
-        if: steps.state.outputs.resume == '' && steps.state.outputs.moved != 'true'
+        if: steps.state.outputs.resume == '' && steps.state.outputs.moved != 'true' && steps.state.outputs.done != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
