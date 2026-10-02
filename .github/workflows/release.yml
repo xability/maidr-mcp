@@ -24,9 +24,8 @@ env:
 jobs:
   test:
     # A scheduled run does nothing until the repository variable RELEASE_ENABLED is
-    # "true", which the maintainer sets once PyPI trusts this workflow. A tag pushed
-    # without its PyPI upload is never uploaded later: the next run starts from that tag
-    # and finds nothing new to release. A run started by hand always runs.
+    # "true", which the maintainer sets once PyPI trusts this workflow; before that, each
+    # would push a tag that PyPI then refuses. A run started by hand always runs.
     if: github.event_name == 'workflow_dispatch' || vars.RELEASE_ENABLED == 'true'
     runs-on: ubuntu-latest
     strategy:
@@ -67,46 +66,101 @@ jobs:
     permissions:
       contents: write
     outputs:
-      released: ${{ steps.version.outputs.released }}
-      version: ${{ steps.version.outputs.version }}
-      tag: ${{ steps.version.outputs.tag }}
+      released: ${{ steps.release.outputs.released }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
     steps:
-      # The commit the tests passed on, with every tag: the next version is read from them.
+      # The commit the tests passed on, with every branch and tag: the next version is read
+      # from the tags.
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      # python-semantic-release commits to a branch. It pushes only if origin's main is
-      # still this commit, so a merge during the tests stops the release, and the next
-      # run releases both.
-      - run: git switch -C main
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-      # Stamps the version (pyproject.toml, server.json, uv.lock), writes CHANGELOG.md,
-      # builds dist/ from that tree, then commits, tags vX.Y.Z, pushes both and creates
-      # the GitHub release. Without a feat, fix or perf commit since the last tag it does
-      # nothing and says released=false.
+      # A re-run of this job, after an earlier attempt pushed the tag and then failed,
+      # finishes that release: its tag is on the release commit, whose parent is the commit
+      # the tests passed on, and PyPI does not have the version yet.
+      - name: Find where the release stands
+        id: state
+        run: |
+          for tag in $(git tag --list 'v*' --contains "$GITHUB_SHA"); do
+            [ "$(git rev-parse "$tag^{commit}^")" = "$GITHUB_SHA" ] || continue
+            status=$(curl -sS -o /dev/null -w '%{http_code}' \
+              "https://pypi.org/pypi/maidr-mcp/${tag#v}/json" || true)
+            if [ "$status" = 404 ]; then
+              echo "resume=$tag" >> "$GITHUB_OUTPUT"
+              exit 0
+            elif [ "$status" != 200 ]; then
+              echo "::error::PyPI answered $status for maidr-mcp ${tag#v}, so whether $tag is published is unknown. Re-run this job."
+              exit 1
+            fi
+          done
+      # Stamps the version (pyproject.toml, server.json, uv.lock), writes CHANGELOG.md and
+      # builds dist/ from that tree. Then commits, tags vX.Y.Z, pushes both if origin's main
+      # is still the tested commit, and makes the GitHub release. Without a feat, fix or
+      # perf commit since the last tag it does nothing and says released=false.
       - name: Version, changelog, tag and GitHub release
         id: version
+        if: steps.state.outputs.resume == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: uvx --from "python-semantic-release==$PSR_VERSION" semantic-release -v version
-      - name: Attach the distributions to the GitHub release
-        if: steps.version.outputs.released == 'true'
+        run: |
+          git switch -C main
+          uvx --from "python-semantic-release==$PSR_VERSION" semantic-release -v version
+      - name: Build the release an earlier attempt tagged
+        if: steps.state.outputs.resume != ''
+        env:
+          TAG: ${{ steps.state.outputs.resume }}
+        run: |
+          git switch -C main "$TAG"
+          uv build
+      # Makes the GitHub release that attempt did not, or rewrites the notes of the one it did.
+      - name: The tagged release's GitHub release
+        if: steps.state.outputs.resume != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.state.outputs.resume }}
+        run: uvx --from "python-semantic-release==$PSR_VERSION" semantic-release -v changelog --post-to-release-tag "$TAG"
+      - name: What this run releases
+        id: release
+        env:
+          RESUMED: ${{ steps.state.outputs.resume }}
+          RELEASED: ${{ steps.version.outputs.released }}
           TAG: ${{ steps.version.outputs.tag }}
-        run: uvx --from "python-semantic-release==$PSR_VERSION" semantic-release publish --tag "$TAG"
-      - if: steps.version.outputs.released == 'true'
+        run: |
+          if [ -n "$RESUMED" ]; then
+            released=true tag=$RESUMED
+          elif [ "$RELEASED" = true ]; then
+            released=true tag=$TAG
+          else
+            released=false tag=
+          fi
+          {
+            echo "released=$released"
+            echo "tag=$tag"
+            echo "version=${tag#v}"
+          } >> "$GITHUB_OUTPUT"
+      - if: steps.release.outputs.released == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
           if-no-files-found: error
+          # A re-run replaces what an earlier attempt uploaded.
+          overwrite: true
+      # --clobber replaces a file an earlier attempt uploaded.
+      - name: Attach the distributions to the GitHub release
+        if: steps.release.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
 
-  # From here on the tag is pushed. If a job below fails, fix the cause and use "Re-run
-  # failed jobs" on this run; a new run would find the tag and release nothing.
+  # From here on the tag is pushed. If any job fails, fix the cause and use "Re-run failed
+  # jobs" on this run; the release job, re-run, finishes the release it tagged. A new run
+  # would start from the tag and publish nothing.
 
   pypi:
     needs: release
