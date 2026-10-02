@@ -1,16 +1,22 @@
 name: release
 
 on:
-  # Weekly, an hour after py-maidr releases (Mondays 16:00 UTC) and two after maidr
-  # (15:00), so a release carries what update-maidr.yml has raised from them that day.
+  # Weekly, Mondays at 17:53 UTC. maidr releases at 15:00 and py-maidr at 16:00, and
+  # update-maidr.yml raises the pins from them in its runs at :23, so a release carries what
+  # it raised that day. Late in the hour, so those runs have usually pushed by the time this
+  # one tests main, and off its top, when GitHub most often delays or drops scheduled runs.
   # GitHub's cron is UTC and ignores daylight saving.
   schedule:
-    - cron: "0 17 * * 1"
+    - cron: "53 17 * * 1"
   workflow_dispatch:
 
-# update-maidr.yml pushes to main too, so the two share this group and wait for each
-# other instead of racing. A run that has started is never cancelled; GitHub keeps one
-# waiting run per group, so a newer waiting run replaces an older one.
+# One run at a time. A run that has started is never cancelled; GitHub keeps one waiting
+# run, and a newer waiting run replaces it.
+#
+# update-maidr.yml pushes to main too, and neither waits for the other. Nothing here pushes
+# over a main that moved: the release job releases only the commit the tests passed on and
+# otherwise starts a new run for the new main, and python-semantic-release pushes only if
+# origin's main is still that commit.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -64,7 +70,10 @@ jobs:
     if: github.repository == 'xability/maidr-mcp' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
+      # The release commit, the tag and the GitHub release.
       contents: write
+      # A new run of this workflow, when main moved on during the tests.
+      actions: write
     outputs:
       released: ${{ steps.release.outputs.released }}
       version: ${{ steps.release.outputs.version }}
@@ -81,7 +90,8 @@ jobs:
           python-version: "3.12"
       # A re-run of this job, after an earlier attempt pushed the tag and then failed,
       # finishes that release: its tag is on the release commit, whose parent is the commit
-      # the tests passed on, and PyPI does not have the version yet.
+      # the tests passed on, and PyPI does not have the version yet. Otherwise, if main has
+      # moved on from that commit, the next step hands the release to a new run.
       - name: Find where the release stands
         id: state
         run: |
@@ -97,13 +107,23 @@ jobs:
               exit 1
             fi
           done
+          if [ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$GITHUB_SHA" ]; then
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Hand the release to a run on the new main
+        if: steps.state.outputs.moved == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "::notice::main moved on from $GITHUB_SHA during the tests. A new run of this workflow tests the new main and releases it."
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref main
       # Stamps the version (pyproject.toml, server.json, uv.lock), writes CHANGELOG.md and
       # builds dist/ from that tree. Then commits, tags vX.Y.Z, pushes both if origin's main
       # is still the tested commit, and makes the GitHub release. Without a feat, fix or
       # perf commit since the last tag it does nothing and says released=false.
       - name: Version, changelog, tag and GitHub release
         id: version
-        if: steps.state.outputs.resume == ''
+        if: steps.state.outputs.resume == '' && steps.state.outputs.moved != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
