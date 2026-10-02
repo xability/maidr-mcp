@@ -22,7 +22,9 @@ name: update-maidr
 # The checks run code nobody here has read: the new py-maidr and what it pulls in, and the npm
 # packages of ext-apps' reference host, which the e2e installs without a lockfile, so afresh on
 # every run. In their own job that code never shares a runner with a token that can push, and
-# `land` runs none of it.
+# `land` runs none of it. Nor does anything that code leaves behind: setup-uv's cache is off in
+# every job here. On, `check` would save the uv cache under the key `land` restores, and ci.yml's
+# runs after it, so `land` would lock from package metadata that `check`'s code could rewrite.
 #
 # While an issue for some versions is open, the hourly run leaves those versions alone, so a
 # failure is reported once rather than every hour: close the issue to let it try again, or run
@@ -87,6 +89,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          enable-cache: false
 
       - name: Write the newest maidr.js and py-maidr
         id: update
@@ -190,6 +193,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          enable-cache: false
 
       - name: Check the new maidr.js's npm provenance
         id: provenance
@@ -293,6 +297,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          enable-cache: false
 
       # The script puts into the issue only what it wrote or checked: version numbers, a step it
       # knows, and a reason it gave itself. A version it refused is never in it.

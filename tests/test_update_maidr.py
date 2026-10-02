@@ -465,3 +465,12 @@ def test_the_workflow_passes_untrusted_input_through_env_only():
     assert untrusted
     env_entry = re.compile(r"^\s+[A-Z][A-Z0-9_]*: \$\{\{ .* \}\}$")
     assert [line for line in untrusted if not env_entry.match(line)] == []
+
+
+def test_no_job_shares_a_uv_cache():
+    # setup-uv caches on GitHub's runners unless told not to, and `check` would then save a cache
+    # its untrusted code had written under the very key `land` restores before it runs uv lock.
+    text = WORKFLOW.read_text(encoding="utf-8")
+    steps = re.findall(r"uses: astral-sh/setup-uv@\S+\n((?: {8,}.*\n)*)", text)
+    assert len(steps) == 3
+    assert all(re.search(r"^\s+enable-cache: false$", step, re.MULTILINE) for step in steps)
