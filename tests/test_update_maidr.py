@@ -409,7 +409,7 @@ def test_the_commit_message_names_what_changed():
     only_js = um.Update(JS_PIN, JS_NEXT, PY_LOCKED, PY_LOCKED, "d")
     assert um.commit_message(only_js).splitlines()[0] == f"fix(deps): load maidr.js {JS_NEXT}"
     only_py = um.Update(JS_PIN, JS_PIN, PY_LOCKED, PY_NEXT, "d")
-    assert um.commit_message(only_py).splitlines()[0] == f"fix(deps): load py-maidr {PY_NEXT}"
+    assert um.commit_message(only_py).splitlines()[0] == f"chore(deps): load py-maidr {PY_NEXT}"
     with pytest.raises(ValueError):
         um.commit_message(um.Update(JS_PIN, JS_PIN, PY_LOCKED, PY_LOCKED, "d"))
 

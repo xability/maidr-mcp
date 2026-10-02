@@ -387,7 +387,11 @@ def commit_message(change: Update, run_url: str = "") -> str:
     paragraphs = [
         textwrap.fill(p, width=72, break_long_words=False, break_on_hyphens=False) for p in body
     ]
-    return "\n\n".join([f"fix(deps): load {' and '.join(named)}", *paragraphs]) + "\n"
+    # The maidr.js pin ships in the package and the image, so raising it is a fix the next
+    # release must carry. py-maidr is not pinned for users, who install the newest in pyproject's
+    # range, so moving it in uv.lock alone changes what CI tests and releases nothing.
+    kind = "fix(deps)" if change.js_new != change.js_old else "chore(deps)"
+    return "\n\n".join([f"{kind}: load {' and '.join(named)}", *paragraphs]) + "\n"
 
 
 REPRODUCE = (
