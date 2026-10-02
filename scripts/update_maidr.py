@@ -218,7 +218,7 @@ def check_provenance(version: str, fetch: Fetch = fetch_json) -> None:
     which workflow built it, in which repository and on which branch, and the digest of the
     tarball it built. This reads it as the registry serves it, and requires that it names maidr's
     release workflow on main and the tarball npm serves for this version. It does not check the
-    statement's Sigstore signature itself (npm audit signatures does, for an installed package).
+    statement's Sigstore signature itself: update-maidr.yml runs `npm audit signatures` for that.
     What it turns away is a release published any other way: by hand, from another repository,
     from another workflow or branch of maidr's, or with a stolen token.
     """
@@ -416,6 +416,15 @@ STEPS = {
         "checking the new maidr.js's npm provenance",
         "If maidr now publishes from another workflow or branch, `MAIDR_RELEASE_WORKFLOW` and "
         "`MAIDR_RELEASE_REF` in `scripts/update_maidr.py` name the ones it accepts.",
+        holds=True,
+    ),
+    "fetch": Step("downloading the new maidr.js from npm, to verify its signatures"),
+    "signatures": Step(
+        "verifying the Sigstore signatures of the new maidr.js, and the registry's on what it "
+        "installs with it, with `npm audit signatures`",
+        "The log names each package whose signature did not verify. One that fails twice is a "
+        "package npm serves that its publisher did not sign: do not raise the pin by hand to "
+        "it, and tell maidr's maintainers if it is maidr.",
         holds=True,
     ),
     "sync": Step("`uv sync --locked`", REPRODUCE),

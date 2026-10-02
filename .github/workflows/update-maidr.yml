@@ -28,14 +28,14 @@ name: update-maidr
 # every job here. On, `check` would save the uv cache under the key `land` restores, and ci.yml's
 # runs after it, so `land` would lock from package metadata that `check`'s code could rewrite.
 #
-# A failure that trying the same versions again would only repeat (their provenance, ruff,
-# pytest, e2e/run.sh failing twice, or a push GitHub refused) holds them: while its issue is open,
-# the hourly run leaves them alone, so it is reported once rather than every hour. Close the issue
-# to let it try again, or run this workflow by hand, which tries at once and takes a maidr.js
+# A failure that trying the same versions again would only repeat (their provenance or signatures,
+# ruff, pytest, e2e/run.sh failing twice, or a push GitHub refused) holds them: while its issue is
+# open, the hourly run leaves them alone, so it is reported once rather than every hour. Close the
+# issue to let it try again, or run this workflow by hand, which tries at once and takes a maidr.js
 # version, lower than the pin too. A failure that may pass next time (a download, the browser's
-# install, a release landing between the jobs) holds nothing for a day: the hourly run keeps
-# trying, without adding to the issue, and closes it once they land. The issue's body follows the
-# latest failure, and ends with scripts/update_maidr.py's HOLD_MARKER when that one holds them.
+# install, a release landing between the jobs) holds nothing for a day: the hourly run keeps trying,
+# without adding to the issue, and closes it once they land. The issue's body follows the latest
+# failure, and ends with scripts/update_maidr.py's HOLD_MARKER when that one holds them.
 #
 # The next hourly run raises a lower pin again, however it was set, so holding an older maidr.js
 # means disabling this workflow until maidr releases a fix.
@@ -156,12 +156,37 @@ jobs:
               core.setOutput('proceed', String(changed));
             }
 
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.proceed == 'true'
+        with:
+          node-version: "22"
+
       - name: Check the new maidr.js's npm provenance
         id: provenance
         if: steps.gate.outputs.proceed == 'true' && steps.update.outputs.js_new != steps.update.outputs.js_old
         env:
           JS_NEW: ${{ steps.update.outputs.js_new }}
         run: uv run --no-project python scripts/update_maidr.py provenance --maidr-js "$JS_NEW"
+
+      # The provenance step reads the statement as the registry serves it. `npm audit signatures`
+      # verifies its Sigstore signature, and the registry's signature on every package installed
+      # with it, so not even the registry could pass off a maidr.js that maidr's release workflow
+      # did not build. Before any of the release's code runs, and with npm's install scripts off.
+      - name: Download the new maidr.js
+        id: fetch
+        if: steps.gate.outputs.proceed == 'true' && steps.update.outputs.js_new != steps.update.outputs.js_old
+        env:
+          JS_NEW: ${{ steps.update.outputs.js_new }}
+        run: |
+          mkdir "$RUNNER_TEMP/signatures" && cd "$RUNNER_TEMP/signatures"
+          echo '{"private": true}' > package.json
+          npm install --ignore-scripts --no-audit --no-fund --save-exact "maidr@$JS_NEW"
+      - name: Verify the new maidr.js's signatures
+        id: signatures
+        if: steps.gate.outputs.proceed == 'true' && steps.update.outputs.js_new != steps.update.outputs.js_old
+        working-directory: ${{ runner.temp }}/signatures
+        run: |
+          npm audit signatures || { echo "::warning::npm audit signatures failed; running it once more."; sleep 30; npm audit signatures; }
 
       # ci.yml's checks, which the push in `land` does not start.
       - id: sync
@@ -179,10 +204,6 @@ jobs:
         run: |
           uv run --isolated --locked --python 3.10 pytest -q
           uv run --isolated --locked --python 3.13 pytest -q
-      - uses: actions/setup-node@v4
-        if: steps.gate.outputs.proceed == 'true'
-        with:
-          node-version: "22"
       # Each of the next two runs once more after a failure, which is as likely a download or a
       # timing as the release, so that it opens an issue only when it fails twice.
       - name: Install Playwright's Chromium

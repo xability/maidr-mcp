@@ -440,14 +440,16 @@ def test_the_issue_names_the_versions_the_step_and_the_run():
     assert "(https://github.com/xability/maidr-mcp/actions/runs/7)" in body
 
 
-@pytest.mark.parametrize("step", ["provenance", "lint", "format", "pytest", "e2e", "push"])
+@pytest.mark.parametrize(
+    "step", ["provenance", "signatures", "lint", "format", "pytest", "e2e", "push"]
+)
 def test_a_failure_about_the_versions_holds_them(step):
     _, body = um.issue(step=step, js_old=JS_PIN, js_new=JS_NEXT, py_old=PY_LOCKED, py_new=PY_LOCKED)
     assert body.rstrip().endswith(um.HOLD_MARKER)
     assert "leaves these versions alone" in body
 
 
-@pytest.mark.parametrize("step", ["gate", "sync", "browser", "land", "", "cancelled"])
+@pytest.mark.parametrize("step", ["gate", "fetch", "sync", "browser", "land", "", "cancelled"])
 def test_a_failure_that_says_nothing_about_the_versions_holds_nothing(step):
     _, body = um.issue(step=step, js_old=JS_PIN, js_new=JS_NEXT, py_old=PY_LOCKED, py_new=PY_LOCKED)
     assert um.HOLD_MARKER not in body
