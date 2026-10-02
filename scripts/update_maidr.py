@@ -9,7 +9,8 @@ maidr-mcp pins maidr twice:
 
 ``.github/workflows/update-maidr.yml`` runs ``update`` every hour, ``provenance`` on a new
 maidr.js, then every check against what they wrote, and commits only when all of them pass;
-``report`` writes the issue it opens when one does not. By hand, from the repository root:
+``report`` writes the issue it opens when one does not, and ``resolved`` picks the issues a later
+run settles. By hand, from the repository root:
 
     uv run --no-project python scripts/update_maidr.py update
     uv run --no-project python scripts/update_maidr.py update --maidr-js 4.14.0 --allow-lower
@@ -46,7 +47,7 @@ MAIDR_REPOSITORY = "https://github.com/xability/maidr"
 MAIDR_RELEASE_WORKFLOW = ".github/workflows/release.yml"
 MAIDR_RELEASE_REF = "refs/heads/main"
 SLSA_PROVENANCE = "https://slsa.dev/provenance/v1"
-# Every issue title starts with it. update-maidr.yml closes the bot's open issues that do.
+# Every issue title starts with it.
 TITLE_PREFIX = "Automatic maidr update"
 
 # An npm version as semver writes it: MAJOR.MINOR.PATCH, numeric identifiers without leading
@@ -58,7 +59,7 @@ _PRE = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
 NPM_VERSION = re.compile(rf"{_NUM}\.{_NUM}\.{_NUM}(?:-{_PRE}(?:\.{_PRE})*)?")
 # A PyPI release in PEP 440's normal form, without epochs or local versions.
 PYPI_VERSION = re.compile(
-    r"[0-9]+(?:\.[0-9]+)*(?:(?:a|b|rc)[0-9]+)?(?:\.post[0-9]+)?(?:\.dev[0-9]+)?"
+    r"([0-9]+(?:\.[0-9]+)*)(?:(a|b|rc)([0-9]+))?(?:\.post([0-9]+))?(?:\.dev([0-9]+))?"
 )
 MAX_VERSION_LENGTH = 64
 
@@ -79,10 +80,16 @@ def log(message: str) -> None:
     print(f"update_maidr: {message}", file=sys.stderr)
 
 
+def valid(value: object, pattern: re.Pattern[str] = NPM_VERSION) -> str:
+    """``value`` if it is a version number, "" otherwise."""
+    ok = isinstance(value, str) and len(value) <= MAX_VERSION_LENGTH and pattern.fullmatch(value)
+    return value if ok else ""
+
+
 def checked(value: object, what: str, pattern: re.Pattern[str] = NPM_VERSION) -> str:
     """``value`` if it is a version number, refused otherwise."""
-    if isinstance(value, str) and len(value) <= MAX_VERSION_LENGTH and pattern.fullmatch(value):
-        return value
+    if version := valid(value, pattern):
+        return version
     # It can come from a repository_dispatch payload. The log gets its repr, which escapes every
     # line break, so it cannot start a workflow command; the message gets none of it.
     log(f"refusing {what}: {str(value)[:80]!r}")
@@ -97,6 +104,29 @@ def version_key(version: str) -> tuple[Any, ...]:
         return (major, minor, patch, 1, ())
     ids = tuple((0, int(i), "") if i.isdigit() else (1, 0, i) for i in pre.split("."))
     return (major, minor, patch, 0, ids)
+
+
+def pypi_key(version: str) -> tuple[Any, ...]:
+    """Sorts what PYPI_VERSION takes as PEP 440 does: 1.0.dev1 < 1.0a1 < 1.0 = 1.0.0 < 1.0.post1."""
+    match = PYPI_VERSION.fullmatch(version)
+    if not match:
+        raise ValueError(f"not a PyPI version: {version[:80]!r}")
+    release, phase, number, post, dev = match.groups()
+    parts = [int(part) for part in release.split(".")]
+    while len(parts) > 1 and parts[-1] == 0:
+        parts.pop()
+    if phase:
+        pre = (("a", "b", "rc").index(phase), int(number))
+    elif dev is not None and post is None:
+        pre = (-1, 0)  # a .dev of the release itself comes before its first alpha
+    else:
+        pre = (3, 0)  # the release, and its .posts, come after every pre-release
+    return (
+        tuple(parts),
+        pre,
+        -1 if post is None else int(post),
+        (1, 0) if dev is None else (0, int(dev)),
+    )
 
 
 def read_pin(source: str) -> str:
@@ -238,6 +268,10 @@ def issue_title(js: str, py: str) -> str:
     if not (js and py):
         return f"{TITLE_PREFIX} failed before choosing the versions"
     return f"{TITLE_PREFIX} to maidr.js {js} / py-maidr {py} failed"
+
+
+# A title issue_title wrote for a pair of versions.
+PAIR_TITLE = re.compile(rf"{re.escape(TITLE_PREFIX)} to maidr\.js (\S+) / py-maidr (\S+) failed")
 
 
 @dataclass
@@ -405,12 +439,8 @@ def issue(
     line; so nothing reaches the issue that this script did not write or check.
     """
 
-    def version(value: str, pattern: re.Pattern[str]) -> str:
-        ok = len(value) <= MAX_VERSION_LENGTH and pattern.fullmatch(value)
-        return value if ok else ""
-
-    js_old, js_new = version(js_old, NPM_VERSION), version(js_new, NPM_VERSION)
-    py_old, py_new = version(py_old, PYPI_VERSION), version(py_new, PYPI_VERSION)
+    js_old, js_new = valid(js_old), valid(js_new)
+    py_old, py_new = valid(py_old, PYPI_VERSION), valid(py_new, PYPI_VERSION)
     doing, hint = STEPS.get(step, ("a step that did not record its name", ""))
     parts = [f"The automatic maidr update did not reach `main`: it stopped at {doing}."]
     if js_new and py_new:
@@ -435,11 +465,53 @@ def issue(
         )
     else:
         parts.append(
-            "The hourly run tries again every hour, and does not add to this issue while it is "
-            "open. Close it once the runs pass again; the next update the workflow pushes "
-            "closes it too."
+            "The hourly run tries again every hour, without adding to this issue, and closes it "
+            "once a run chooses the versions."
         )
     return issue_title(js_new, py_new), "\n\n".join(parts) + "\n"
+
+
+def resolved(
+    issues: object,
+    *,
+    landed_js: str = "",
+    landed_py: str = "",
+    sha: str = "",
+    run_url: str = "",
+) -> list[dict[str, Any]]:
+    """The bot's open update issues that this run settles, each with the comment that closes it.
+
+    ``issues`` are those issues as ``{"number", "title"}``; the workflow calls this only once a
+    run has chosen the versions, which settles the issue about a run that could not. A run that
+    also pushed ``landed_js`` and ``landed_py`` settles every pair no newer than them. A pair
+    newer in either stays open: one a lower maidr.js given by hand left behind, say.
+    """
+    landed_js, landed_py = valid(landed_js), valid(landed_py, PYPI_VERSION)
+    sha = sha if re.fullmatch(r"[0-9a-f]{40}", sha) else ""
+    later = f"[A later run]({run_url})" if run_url else "A later run"
+    settled = []
+    for item in issues if isinstance(issues, list) else []:
+        number, title = _get(item, "number"), _get(item, "title")
+        if type(number) is not int or not isinstance(title, str):
+            continue
+        if title == issue_title("", ""):
+            comment = f"{later} chose the versions again, so this report is out of date."
+            settled.append({"number": number, "comment": comment})
+            continue
+        pair = PAIR_TITLE.fullmatch(title)
+        js, py = (valid(pair[1]), valid(pair[2], PYPI_VERSION)) if pair else ("", "")
+        if not (js and py and landed_js and landed_py):
+            continue
+        if version_key(js) > version_key(landed_js) or pypi_key(py) > pypi_key(landed_py):
+            continue
+        commit = f" ({sha})" if sha else ""
+        comment = (
+            f"`main` now loads maidr.js {landed_js} and locks py-maidr {landed_py}{commit}, which "
+            "passed every check, so this report is out of date. A failure with a later release "
+            "opens a new issue."
+        )
+        settled.append({"number": number, "comment": comment})
+    return settled
 
 
 def run_url_from_env() -> str:
@@ -475,7 +547,29 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("step", "reason", "js-old", "js-new", "py-old", "py-new"):
         rep.add_argument(f"--{name}", default="")
     rep.add_argument("--body-file", type=Path, required=True)
+    res = commands.add_parser(
+        "resolved",
+        help="read the bot's open issues as JSON on stdin; print the ones this run settles",
+    )
+    for name in ("landed-js", "landed-py", "sha"):
+        res.add_argument(f"--{name}", default="")
     args = parser.parse_args(argv)
+
+    if args.command == "resolved":
+        try:
+            issues = json.load(sys.stdin)
+        except ValueError:
+            log("the open issues are not JSON")
+            return 1
+        settled = resolved(
+            issues,
+            landed_js=args.landed_js,
+            landed_py=args.landed_py,
+            sha=args.sha,
+            run_url=run_url_from_env(),
+        )
+        print(json.dumps(settled))
+        return 0
 
     if args.command == "report":
         title, body = issue(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib.util
+import io
 import json
 import re
 import shutil
@@ -186,6 +187,28 @@ def test_pypi_versions_are_accepted(version):
 def test_anything_but_a_pypi_version_is_refused(value):
     with pytest.raises(um.Refused):
         um.checked(value, "v", um.PYPI_VERSION)
+
+
+def test_pypi_versions_sort_by_pep_440():
+    ordered = [
+        "1.0.dev1",
+        "1.0a1.dev1",
+        "1.0a1",
+        "1.0a2",
+        "1.0b1",
+        "1.0rc1",
+        "1.0rc1.post1",
+        "1.0",
+        "1.0.post1.dev1",
+        "1.0.post1",
+        "1.0.1",
+        "1.2",
+        "1.10",
+    ]
+    assert sorted(reversed(ordered), key=um.pypi_key) == ordered
+    assert um.pypi_key("1.26") == um.pypi_key("1.26.0")
+    with pytest.raises(ValueError):
+        um.pypi_key("1!2.0")
 
 
 def test_versions_sort_by_semver_precedence():
@@ -391,12 +414,15 @@ def test_the_commit_message_names_what_changed():
         um.commit_message(um.Update(JS_PIN, JS_PIN, PY_LOCKED, PY_LOCKED, "d"))
 
 
-def test_issue_titles_are_stable_and_share_the_prefix_the_workflow_closes_by():
+def test_issue_titles_are_stable_and_read_back():
     title = um.issue_title("4.14.0", "1.27.0")
     assert title == "Automatic maidr update to maidr.js 4.14.0 / py-maidr 1.27.0 failed"
-    assert um.issue_title("", "") == "Automatic maidr update failed before choosing the versions"
-    assert all(t.startswith(um.TITLE_PREFIX) for t in (title, um.issue_title("", "")))
-    assert f"'{um.TITLE_PREFIX}'" in WORKFLOW.read_text(encoding="utf-8")
+    assert um.PAIR_TITLE.fullmatch(title).groups() == ("4.14.0", "1.27.0")
+    unchosen = um.issue_title("", "")
+    assert unchosen == "Automatic maidr update failed before choosing the versions"
+    assert not um.PAIR_TITLE.fullmatch(unchosen)
+    # The workflow looks for that issue by its title, to have `report` close it.
+    assert f"UNCHOSEN: {unchosen}\n" in WORKFLOW.read_text(encoding="utf-8")
 
 
 def test_the_issue_names_the_versions_the_step_and_the_run():
@@ -430,6 +456,70 @@ def test_the_issue_drops_whatever_it_cannot_check():
     assert title == um.issue_title("", "")
     assert "evil" not in body and "<img" not in body
     assert "a step that did not record its name" in body
+
+
+# Closing the issues a run settles
+
+
+def open_issues(*titles: str) -> list[dict]:
+    return [{"number": n, "title": title} for n, title in enumerate(titles, start=1)]
+
+
+SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+def test_a_run_that_chose_the_versions_settles_the_issue_about_one_that_could_not():
+    issues = open_issues(um.issue_title("", ""), um.issue_title(JS_NEXT, PY_LOCKED))
+    # Nothing landed: only the first issue is settled.
+    settled = um.resolved(issues, run_url="https://github.com/o/r/actions/runs/3")
+    assert [s["number"] for s in settled] == [1]
+    assert settled[0]["comment"] == (
+        "[A later run](https://github.com/o/r/actions/runs/3) chose the versions again, so this "
+        "report is out of date."
+    )
+
+
+def test_a_landed_update_settles_the_pairs_no_newer_than_it():
+    issues = open_issues(
+        um.issue_title(JS_PIN, PY_NEXT),  # 1: what landed
+        um.issue_title(JS_PIN, PY_LOCKED),  # 2: older py-maidr
+        um.issue_title("4.0.0", PY_LOCKED),  # 3: older in both
+        um.issue_title(JS_NEXT, PY_LOCKED),  # 4: a newer maidr.js, left by a lower one by hand
+        um.issue_title(JS_PIN, bumped(PY_NEXT)),  # 5: a newer py-maidr
+        um.issue_title("", ""),  # 6: a run that could not choose
+        "Automatic maidr update to maidr.js 4.x / py-maidr 1.27.0 failed",  # 7: not versions
+        "Something else",  # 8
+    )
+    settled = um.resolved(issues, landed_js=JS_PIN, landed_py=PY_NEXT, sha=SHA)
+    assert [s["number"] for s in settled] == [1, 2, 3, 6]
+    assert f"maidr.js {JS_PIN} and locks py-maidr {PY_NEXT} ({SHA})" in settled[0]["comment"]
+
+
+def test_only_what_it_can_check_settles_an_issue():
+    pair = um.issue_title(JS_PIN, PY_LOCKED)
+    hostile = [
+        {"number": "1", "title": pair},
+        {"number": True, "title": pair},
+        {"number": 3, "title": None},
+        "4",
+        None,
+    ]
+    assert um.resolved(hostile, landed_js=JS_NEXT, landed_py=PY_NEXT) == []
+    assert um.resolved({"number": 1, "title": pair}, landed_js=JS_NEXT, landed_py=PY_NEXT) == []
+    # A landed version that is not one settles no pair, and a bad sha is left out.
+    assert um.resolved(open_issues(pair), landed_js="latest", landed_py=PY_NEXT) == []
+    settled = um.resolved(open_issues(pair), landed_js=JS_NEXT, landed_py=PY_NEXT, sha="x`y")
+    assert "x`y" not in settled[0]["comment"]
+
+
+def test_the_resolved_command_reads_issues_on_stdin_and_prints_json(monkeypatch, capsys):
+    issues = open_issues(um.issue_title(JS_PIN, PY_LOCKED), "Something else")
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(issues)))
+    argv = ["resolved", "--landed-js", JS_NEXT, "--landed-py", PY_LOCKED, "--sha", SHA]
+    assert um.main(argv) == 0
+    assert [s["number"] for s in json.loads(capsys.readouterr().out)] == [1]
+    monkeypatch.setattr(sys, "stdin", io.StringIO("not json"))
+    assert um.main(["resolved"]) == 1
 
 
 # The command line, as the workflow runs it

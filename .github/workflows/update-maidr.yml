@@ -17,7 +17,9 @@ name: update-maidr
 # - `check` writes it and runs ci.yml's checks against it, with a read-only token;
 # - `land` writes it again, with this repository's script alone, and commits and pushes it if the
 #   files come out the same;
-# - `report` opens an issue when either fails, or comments on the open one for the same versions.
+# - `report` opens an issue when either fails, or comments on the open one for the same versions,
+#   and closes the issues a run settles: about versions no newer than it pushed, or about a run
+#   that could not choose the versions, once one has.
 #
 # The checks run code nobody here has read: the new py-maidr and what it pulls in, and the npm
 # packages of ext-apps' reference host, which the e2e installs without a lockfile, so afresh on
@@ -54,7 +56,7 @@ on:
     # payload is not read.
     types: [maidr-released, py-maidr-released]
 
-# Each job asks for what it needs: contents: write and issues: write between them.
+# Each job asks for what it needs: contents: write in `land`, issues: write in `report`.
 permissions: {}
 
 # The automatic runs one at a time, queued rather than cancelled, so no run stops between its
@@ -82,6 +84,7 @@ jobs:
       py_old: ${{ steps.update.outputs.py_old }}
       py_new: ${{ steps.update.outputs.py_new }}
       digest: ${{ steps.update.outputs.digest }}
+      stale: ${{ steps.gate.outputs.stale }}
       reason: ${{ steps.provenance.outputs.reason || steps.update.outputs.reason }}
       failed_step: ${{ steps.failed.outputs.step }}
     steps:
@@ -104,27 +107,42 @@ jobs:
           if [ "$EVENT" = workflow_dispatch ]; then lower=(--allow-lower); fi
           uv run --no-project python scripts/update_maidr.py update --maidr-js "$REQUESTED" "${lower[@]}"
 
-      - name: Look for an open issue about these versions
+      # Also on a run that found nothing new: one that chose the versions settles an issue about
+      # a run that could not, and `report` closes it.
+      - name: Look for open issues about the update
         id: gate
-        if: steps.update.outputs.changed == 'true'
+        if: steps.update.outcome == 'success'
         uses: actions/github-script@v7
         env:
+          CHANGED: ${{ steps.update.outputs.changed }}
           TITLE: ${{ steps.update.outputs.issue_title }}
+          UNCHOSEN: Automatic maidr update failed before choosing the versions
         with:
           script: |
-            const issues = await github.paginate(github.rest.issues.listForRepo, {
-              ...context.repo,
-              state: 'open',
-              per_page: 100,
-            });
-            // The bot's own only: anyone can open an issue with this title.
-            const open = issues.find((issue) => !issue.pull_request
-              && issue.user?.login === 'github-actions[bot]' && issue.title === process.env.TITLE);
+            const changed = process.env.CHANGED === 'true';
+            let all;
+            try {
+              all = await github.paginate(github.rest.issues.listForRepo, {
+                ...context.repo,
+                state: 'open',
+                per_page: 100,
+              });
+            } catch (error) {
+              // With nothing new, the run only looks for an issue to close, which the next can.
+              if (changed) throw error;
+              core.warning(`Could not list the open issues: ${error.message}`);
+              return;
+            }
+            // The bot's own only: anyone can open an issue with these titles.
+            const issues = all.filter((issue) => !issue.pull_request
+              && issue.user?.login === 'github-actions[bot]');
+            core.setOutput('stale', String(issues.some((issue) => issue.title === process.env.UNCHOSEN)));
+            const open = changed && issues.find((issue) => issue.title === process.env.TITLE);
             if (open && context.eventName === 'schedule') {
               core.notice(`#${open.number} reports these versions failing, so the hourly run leaves them alone. Close it, or run this workflow by hand, to try again.`);
               core.setOutput('proceed', 'false');
             } else {
-              core.setOutput('proceed', 'true');
+              core.setOutput('proceed', String(changed));
             }
 
       - name: Check the new maidr.js's npm provenance
@@ -185,8 +203,9 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
-      issues: write
     outputs:
+      pushed: ${{ steps.push.outputs.pushed }}
+      sha: ${{ steps.push.outputs.sha }}
       reason: ${{ steps.provenance.outputs.reason || steps.land.outputs.reason }}
       failed_step: ${{ steps.failed.outputs.step }}
     steps:
@@ -243,38 +262,6 @@ jobs:
           fi
           exit 1
 
-      # The update is on main by now: a failure here must not report that it is not.
-      - name: Close the issues this update supersedes
-        if: steps.push.outputs.pushed == 'true'
-        continue-on-error: true
-        uses: actions/github-script@v7
-        env:
-          JS_NEW: ${{ needs.check.outputs.js_new }}
-          PY_NEW: ${{ needs.check.outputs.py_new }}
-          SHA: ${{ steps.push.outputs.sha }}
-        with:
-          script: |
-            const { JS_NEW, PY_NEW, SHA } = process.env;
-            const issues = await github.paginate(github.rest.issues.listForRepo, {
-              ...context.repo,
-              state: 'open',
-              per_page: 100,
-            });
-            const body = `\`main\` now loads maidr.js ${JS_NEW} and locks py-maidr ${PY_NEW} (${SHA}), which passed every check, so this report is out of date. A failure with a later release opens a new issue.`;
-            for (const issue of issues) {
-              // scripts/update_maidr.py's TITLE_PREFIX starts every title it writes.
-              if (issue.pull_request || issue.user?.login !== 'github-actions[bot]'
-                || !issue.title.startsWith('Automatic maidr update')) continue;
-              await github.rest.issues.createComment({ ...context.repo, issue_number: issue.number, body });
-              await github.rest.issues.update({
-                ...context.repo,
-                issue_number: issue.number,
-                state: 'closed',
-                state_reason: 'completed',
-              });
-              core.info(`Closed #${issue.number}.`);
-            }
-
       - name: Name the step that failed
         id: failed
         if: failure()
@@ -286,7 +273,7 @@ jobs:
 
   report:
     needs: [check, land]
-    if: failure()
+    if: failure() || needs.check.outputs.stale == 'true' || needs.land.outputs.pushed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -305,6 +292,7 @@ jobs:
       # knows, and a reason it gave itself. A version it refused is never in it.
       - name: Write the issue
         id: issue
+        if: needs.check.result == 'failure' || needs.land.result == 'failure'
         env:
           STEP: ${{ needs.land.outputs.failed_step || needs.check.outputs.failed_step }}
           REASON: ${{ needs.land.outputs.reason || needs.check.outputs.reason }}
@@ -319,6 +307,7 @@ jobs:
             --body-file "$RUNNER_TEMP/issue.md"
 
       - name: Open the issue, or add to the open one
+        if: steps.issue.outcome == 'success'
         uses: actions/github-script@v7
         env:
           TITLE: ${{ steps.issue.outputs.title }}
@@ -344,4 +333,42 @@ jobs:
             } else {
               await github.rest.issues.createComment({ ...context.repo, issue_number: open.number, body });
               core.notice(`Added to #${open.number}.`);
+            }
+
+      # After the report, and never failing the job over it: an update on `main` must not read
+      # as failed, nor a failure go unreported, because closing an older issue did not work.
+      - name: Close the issues this run settles
+        if: always() && needs.check.outputs.js_new != ''
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          LANDED_JS: ${{ needs.land.outputs.pushed == 'true' && needs.check.outputs.js_new || '' }}
+          LANDED_PY: ${{ needs.land.outputs.pushed == 'true' && needs.check.outputs.py_new || '' }}
+          SHA: ${{ needs.land.outputs.sha }}
+        with:
+          script: |
+            const all = await github.paginate(github.rest.issues.listForRepo, {
+              ...context.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            // The bot's own only: anyone can open an issue with these titles.
+            const issues = all.filter((issue) => !issue.pull_request
+              && issue.user?.login === 'github-actions[bot]');
+            const { LANDED_JS, LANDED_PY, SHA } = process.env;
+            const { stdout } = await exec.getExecOutput(
+              'uv',
+              ['run', '--no-project', 'python', 'scripts/update_maidr.py', 'resolved',
+                '--landed-js', LANDED_JS, '--landed-py', LANDED_PY, '--sha', SHA],
+              { input: Buffer.from(JSON.stringify(issues.map(({ number, title }) => ({ number, title })))) },
+            );
+            for (const { number, comment } of JSON.parse(stdout)) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: number, body: comment });
+              await github.rest.issues.update({
+                ...context.repo,
+                issue_number: number,
+                state: 'closed',
+                state_reason: 'completed',
+              });
+              core.info(`Closed #${number}.`);
             }
