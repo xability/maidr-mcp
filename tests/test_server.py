@@ -326,6 +326,15 @@ async def test_focus_reaches_maidr_only_when_given():
             )
             assert ran["arguments"] == {"command": "toggle_text", "focus": focus}
 
+        # An explicit null is taken as leaving focus out, as for the other optional arguments,
+        # rather than refused: it can only mean no focus move, which is what maidr then makes.
+        moved = await _relay_once(client, view_id, "maidr_navigate", {**point, "focus": None})
+        assert moved["arguments"] == point
+        ran = await _relay_once(
+            client, view_id, "maidr_run_command", {"command": "toggle_text", "focus": None}
+        )
+        assert ran["arguments"] == {"command": "toggle_text"}
+
 
 async def test_a_focus_that_is_not_a_boolean_never_reaches_the_view():
     # maidr refuses anything but a boolean: the server's schema does too, rather than reading

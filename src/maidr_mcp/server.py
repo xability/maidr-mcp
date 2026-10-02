@@ -131,7 +131,9 @@ RunnableCommand = Literal[
     "tactile_reset_zoom",
 ]
 # maidr's own `focus` input, with its description: strict, since maidr refuses anything but a
-# boolean, and a lax bool would take "no" for false and 1 for true.
+# boolean, and a lax bool would take "no" for false and 1 for true. An explicit null, which maidr
+# also refuses, is taken as leaving focus out, as for every other optional argument here: some
+# models fill each optional argument they skip with null, and leaving it out moves no focus.
 Focus = Annotated[
     bool | None,
     Field(
