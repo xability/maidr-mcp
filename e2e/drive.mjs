@@ -183,7 +183,7 @@ const chart = {
 
 // The other families, each with the layers maidr should read, what the reader's first ArrowRight
 // announces and, where maidr gives the first layer's points a target, what a model's move to its
-// last point announces. maidr 4.12.0 gives
+// last point announces. maidr gives
 // no targets for pie, violin, candlestick or trend-line points: the reader moves through them,
 // and the model reads them but cannot move the reader there.
 const families = [
@@ -602,11 +602,11 @@ try {
   // line, which still says the chart changed, clears as on a Tab in. Then, within 10 seconds,
   // maidr moves their focus nowhere again, so a reader who went back to the host is not pulled
   // in: the move and command are kept, and the status line names them. After the 10 seconds, a
-  // command with focus takes them in again, behind what was kept. maidr 4.12.0 takes no focus,
-  // and refuses these calls as "invalid input".
+  // command with focus takes them in again, behind what was kept. maidr before 4.13.0 takes no
+  // focus, and refuses these calls as "invalid input".
   const noFocusHint = (result) =>
     result?.error === "invalid input"
-      ? "the maidr.js the view loads takes no focus (4.12.0 does not): set MAIDR_JS_FILE to a build that does, or raise MAIDR_JS_VERSION to a release that does"
+      ? "the maidr.js the view loads takes no focus (maidr 4.13.0 is the first that does): check MAIDR_JS_VERSION or MAIDR_JS_FILE"
       : undefined;
   const hostFocus = () => page.evaluate(() => document.activeElement?.tagName);
   const inChartFocus = () => view.evaluate(() => document.hasFocus() && document.getElementById("chart").contains(document.activeElement));
