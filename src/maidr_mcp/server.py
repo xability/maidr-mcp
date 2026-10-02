@@ -44,19 +44,20 @@ use: give them its keys instead.
 
 A move or command made while the reader is typing to you rather than in the chart waits for \
 them: maidr_navigate and maidr_run_command answer applied "on-next-focus", and it happens when \
-they Tab back into the chart. Tell them so, as the chart also does, and do not say it has \
-happened. When they ask to be taken somewhere ("take me to March") or for something now ("play \
-it now"), pass focus: true: maidr moves their keyboard focus into the chart and does it there. \
-Otherwise leave focus out, and let it wait. Never pass focus: true to pull the reader back in \
-because they left the chart, which they did on purpose, nor while the host shows a dialog of \
-its own, such as a confirmation: the chart cannot see the host's dialogs, and would take their \
-focus from one. When the result says focused: true, tell them their focus moved, and into which \
-chart. focused: false means it could not be moved (Safari keeps a chart in a conversation from \
-taking focus without the reader's own key or click, and maidr moves it at most once every 10 \
-seconds), and it waits for them to Tab in. Whenever the answer is not applied "now", tell them \
-what it says, and do not say it has happened: "queued" runs in turn, after what waited for \
-them. If one answers applied "blocked", they have a MAIDR dialog open and nothing happened: \
-tell them to close it first.
+they Tab back into the chart (or, when their braille field holds a move kept for them, once they \
+close braille: the message says which). Tell them so, as the chart also does, and do not say it \
+has happened. When they ask to be taken somewhere ("take me to March") or for something now \
+("play it now"), pass focus: true: maidr moves their keyboard focus into the chart and does it \
+there. Otherwise leave focus out, and let it wait. Never pass focus: true to pull the reader \
+back in because they left the chart, which they did on purpose, nor while the host shows a \
+dialog of its own, such as a confirmation: the chart cannot see the host's dialogs, and would \
+take their focus from one. When the result says focused: true, tell them their focus moved, and \
+into which chart. focused: false means it could not be moved (Safari keeps a chart in a \
+conversation from taking focus without the reader's own key or click, and maidr moves it at most \
+once every 10 seconds in that chart), and it waits for them to Tab in. Whenever the answer is \
+not applied "now", tell them what it says, and do not say it has happened: "queued" runs in \
+turn, after what waited for them. If one answers applied "blocked", they have a MAIDR dialog \
+open and nothing happened: tell them to close it first.
 
 The chart tells you where the reader is as model context, which arrives with their next \
 message. Within a turn it does not change, so it misses your own moves and commands, and the \
@@ -418,9 +419,10 @@ def build_server(relay: Relay | None = None) -> MCPServer:
         "10 seconds on the page -- and the command waits for them to Tab in. A result of applied "
         '"queued" has not run yet either: it waits its turn behind what was kept for the reader, '
         "has no `modes`, and maidr_list_commands counts it in `pending` until it runs. applied "
-        '"on-next-focus" with focused: true means their focus moved in, but their braille field '
-        "reopened there and holds a move kept for them, and the command waits behind that move "
-        "until they close braille, which toggle_braille does. Whenever the result is not applied "
+        '"on-next-focus" while the reader is in the chart -- with focused: true, their focus '
+        "moved in, or without it, they had just come back -- means their braille field reopened "
+        "there and holds a move kept for them, and the command waits behind that move until they "
+        "close braille, which toggle_braille does. Whenever the result is not applied "
         '"now", tell them what its message says, and do not claim it has happened. Without '
         "focus: true, keyboard focus moves only as the command's own keys would move it.",
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False),

@@ -106,7 +106,10 @@ def test_the_instructions_say_when_to_take_the_reader_into_the_chart():
     # What to tell them, either way, and that "queued" has not happened yet.
     assert "focused: true, tell them their focus moved, and into which chart" in INSTRUCTIONS
     assert "focused: false" in INSTRUCTIONS and "Tab in" in INSTRUCTIONS
+    assert "once every 10 seconds in that chart" in INSTRUCTIONS
     assert '"queued"' in INSTRUCTIONS
+    # A move braille holds waits for braille to close, not for a Tab in.
+    assert "holds a move kept for them, once they close braille" in INSTRUCTIONS
 
 
 def test_the_view_tells_the_reader_when_the_model_left_something_waiting():
@@ -222,6 +225,8 @@ async def test_the_command_tools_keep_maidrs_names_arguments_and_hints():
     assert running.annotations.destructive_hint is False
     assert "on-next-focus" in running.description
     assert '"queued"' in running.description
+    # on-next-focus in the chart, with or without focused: true, is braille holding a kept move.
+    assert '"on-next-focus" while the reader is in the chart' in running.description
 
 
 async def test_the_moving_tools_take_maidrs_focus_with_its_guidance():
