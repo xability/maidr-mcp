@@ -77,7 +77,7 @@ concurrency:
 
 jobs:
   check:
-    # A run started on another branch would push a commit made on that branch to main.
+    # Every job here runs from main only, each by a condition of its own; `land` says why.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -236,7 +236,15 @@ jobs:
 
   land:
     needs: check
-    if: needs.check.outputs.proceed == 'true'
+    # Only main's code may run here. This job holds a token that can push to main (its checkout
+    # keeps the credentials, for the push) and runs this repository's scripts/update_maidr.py. The
+    # schedule and repository_dispatch always run main, but a run by hand can be started from
+    # another branch or a tag, and would then run that ref's script and could push its commits to
+    # main. So the condition is the job's own, rather than only `check` being skipped, which a
+    # change to `check` could undo. It guards against a run started from another branch by
+    # mistake, not against whoever pushes that branch: the run follows the branch's own copy of
+    # this file, which they can change.
+    if: github.ref == 'refs/heads/main' && needs.check.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -312,7 +320,10 @@ jobs:
 
   report:
     needs: [check, land]
-    if: failure() || needs.check.outputs.stale == 'true' || needs.land.outputs.pushed == 'true'
+    # Main only, as `land`: this job holds a token that can write issues and runs
+    # scripts/update_maidr.py. Since the condition calls failure(), GitHub adds no success() of its
+    # own, and the parentheses keep the ref test over all of it: `a && b || c` is `(a && b) || c`.
+    if: github.ref == 'refs/heads/main' && (failure() || needs.check.outputs.stale == 'true' || needs.land.outputs.pushed == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

@@ -681,6 +681,27 @@ def test_every_action_is_pinned_to_a_commit():
         assert re.fullmatch(r" # v\d+\.\d+\.\d+", comment), action
 
 
+def test_every_job_runs_from_main_only():
+    # `land` can push to main and `report` can write issues, and both run scripts/update_maidr.py,
+    # so a run by hand from another branch must run neither. Each job tests the ref itself, rather
+    # than counting on `check` being skipped, and over the whole of its condition, since
+    # `a && b || c` is `(a && b) || c`.
+    guard = "github.ref == 'refs/heads/main'"
+    text = WORKFLOW.read_text(encoding="utf-8").split("\njobs:\n")[1]
+    jobs = re.split(r"^  (\w+):\n", text, flags=re.MULTILINE)
+    assert jobs[1::2] == ["check", "land", "report"]
+    for name, body in zip(jobs[1::2], jobs[2::2], strict=True):
+        conditions = re.findall(r"^    if: (.+)$", body, re.MULTILINE)
+        assert len(conditions) == 1, name
+        condition = conditions[0]
+        assert condition == guard or condition.startswith(f"{guard} && "), name
+        # What is left once quoted strings and parenthesized groups are gone is the top level.
+        top = re.sub(r"'[^']*'", "''", condition)
+        while re.search(r"\([^()]*\)", top):
+            top = re.sub(r"\([^()]*\)", "", top)
+        assert "||" not in top, name
+
+
 def test_the_update_runs_what_ci_yml_runs():
     # A push made with GITHUB_TOKEN does not start ci.yml, so `check` runs its checks itself: a
     # check added to ci.yml's test or e2e job must be added there too. Its docker job is left
