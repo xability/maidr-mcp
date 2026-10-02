@@ -57,11 +57,13 @@ on:
 # Each job asks for what it needs: contents: write and issues: write between them.
 permissions: {}
 
-# One run at a time, queued rather than cancelled, so no run stops between its commit and its
-# push. GitHub keeps one run waiting and drops an older waiting one, which would have found the
-# same releases.
+# The automatic runs one at a time, queued rather than cancelled, so no run stops between its
+# commit and its push. GitHub keeps one run waiting and drops an older waiting one, which would
+# have found the same releases. A run by hand has a group of its own, since it may name a
+# maidr.js, or retry versions an issue holds, and must not be dropped for a scheduled run. Its
+# overlapping another run is safe: whichever pushes second finds `main` moved and pushes nothing.
 concurrency:
-  group: update-maidr
+  group: update-maidr-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'auto' }}
   cancel-in-progress: false
 
 jobs:
