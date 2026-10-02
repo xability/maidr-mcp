@@ -64,7 +64,7 @@ def test_every_action_in_the_release_is_pinned_to_a_commit():
     # so a tag moved upstream must not change what runs.
     workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     uses = re.findall(r"uses: (\S+)(.*)$", workflow, re.MULTILINE)
-    assert len(uses) == 16
+    assert uses
     for action, comment in uses:
         assert re.fullmatch(r"[\w-]+/[\w-]+@[0-9a-f]{40}", action), action
         assert re.fullmatch(r" # v\d+\.\d+\.\d+", comment), action

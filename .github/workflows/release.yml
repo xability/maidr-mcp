@@ -153,6 +153,8 @@ jobs:
         id: state
         run: |
           for tag in $(git tag --list 'v*' --contains "$GITHUB_SHA"); do
+            # --contains also lists tags on later commits; only the release commit made from
+            # this one, its child, is this run's.
             [ "$(git rev-parse "$tag^{commit}^")" = "$GITHUB_SHA" ] || continue
             status=$(curl -sS -o /dev/null -w '%{http_code}' \
               "https://pypi.org/pypi/maidr-mcp/${tag#v}/json" || true)
@@ -299,6 +301,7 @@ jobs:
 
   mcp-registry:
     needs: [release, pypi, ghcr]
+    if: needs.release.outputs.released == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
