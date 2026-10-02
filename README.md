@@ -1,5 +1,7 @@
 # maidr-mcp
 
+<!-- mcp-name: io.github.xability/maidr-mcp -->
+
 An [MCP](https://modelcontextprotocol.io) server that shows accessible [maidr](https://maidr.ai) charts inside ChatGPT and Claude conversations, and lets the conversation's model move the reader through them and run the chart's commands for them.
 
 The model calls `show_chart` with the data, and the chart appears in the conversation as an [MCP App](https://modelcontextprotocol.io/extensions/apps). A blind or low-vision reader Tabs into it and explores it the way they explore any maidr chart: arrow keys, screen reader, sonification, braille. Three things then happen through the model:
@@ -60,6 +62,14 @@ The model reads every layer's points with `maidr_get_layer_data`. Where the last
 
 ## Use it
 
+maidr-mcp is published three ways, at the same version:
+
+- **PyPI:** [`maidr-mcp`](https://pypi.org/project/maidr-mcp/), run with [uv](https://docs.astral.sh/uv/). `uvx maidr-mcp` serves HTTP at `127.0.0.1:8000/mcp`; `uvx maidr-mcp --stdio` serves a host that starts the server itself. `uvx maidr-mcp@latest` takes the newest release rather than one uv has cached.
+- **Container image:** `ghcr.io/xability/maidr-mcp`, tagged with each version and `latest`. It serves HTTP at `/mcp` on port 8000.
+- **MCP Registry:** `io.github.xability/maidr-mcp`, for clients that add servers from the [registry](https://registry.modelcontextprotocol.io).
+
+> **Until the first release.** None of the three exists before the first release is published. Until then, run the server from the repository with `uvx --from git+https://github.com/xability/maidr-mcp maidr-mcp` wherever this page says `uvx maidr-mcp`, and build the image yourself with `docker build -t maidr-mcp .` and run `maidr-mcp` in place of `ghcr.io/xability/maidr-mcp`.
+
 What the server needs depends on how the host reaches it:
 
 | Host | How it connects | What the server needs |
@@ -73,9 +83,9 @@ What the server needs depends on how the host reaches it:
 ```bash
 # Make a token once, and keep it: it is the <token> in each host's URL below.
 export MAIDR_MCP_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-uvx --from git+https://github.com/xability/maidr-mcp maidr-mcp --host 0.0.0.0 --port 8000
+uvx maidr-mcp --host 0.0.0.0 --port 8000
 # or
-docker build -t maidr-mcp . && docker run -p 8000:8000 -e MAIDR_MCP_TOKEN maidr-mcp
+docker run -p 8000:8000 -e MAIDR_MCP_TOKEN ghcr.io/xability/maidr-mcp
 ```
 
 The endpoint is `/mcp`, over Streamable HTTP, and with a token also `/mcp/<token>`.
@@ -117,7 +127,7 @@ A request carries the token one of two ways:
 **The ChatGPT desktop app's own MCP servers.** The [desktop app can start a local server itself](https://learn.chatgpt.com/docs/extend/mcp). Open Settings > MCP servers > Add server, choose STDIO, and give it this command, which needs [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uvx --from git+https://github.com/xability/maidr-mcp maidr-mcp --stdio
+uvx maidr-mcp --stdio
 ```
 
 The desktop app shares this configuration with the Codex CLI and IDE extension. There are two caveats:

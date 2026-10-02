@@ -1,0 +1,221 @@
+name: release
+
+on:
+  # Weekly, an hour after py-maidr releases (Mondays 16:00 UTC) and two after maidr
+  # (15:00), so a release carries what update-maidr.yml has raised from them that day.
+  # GitHub's cron is UTC and ignores daylight saving.
+  schedule:
+    - cron: "0 17 * * 1"
+  workflow_dispatch:
+
+# update-maidr.yml pushes to main too, so the two share this group and wait for each
+# other instead of racing. A run that has started is never cancelled; GitHub keeps one
+# waiting run per group, so a newer waiting run replaces an older one.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PSR_VERSION: "10.7.0"
+
+jobs:
+  test:
+    # A scheduled run does nothing until the repository variable RELEASE_ENABLED is
+    # "true", which the maintainer sets once PyPI trusts this workflow. A tag pushed
+    # without its PyPI upload is never uploaded later: the next run starts from that tag
+    # and finds nothing new to release. A run started by hand always runs.
+    if: github.event_name == 'workflow_dispatch' || vars.RELEASE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q
+
+  e2e:
+    if: github.event_name == 'workflow_dispatch' || vars.RELEASE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Playwright's Chromium
+        working-directory: e2e
+        run: npm install --no-audit --no-fund && npx playwright-core install --with-deps chromium
+      - run: bash e2e/run.sh
+
+  release:
+    needs: [test, e2e]
+    # Only main of this repository releases; a dispatch from another branch, or a fork's
+    # run, stops after the tests.
+    if: github.repository == 'xability/maidr-mcp' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      released: ${{ steps.version.outputs.released }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      # The commit the tests passed on, with every tag: the next version is read from them.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      # python-semantic-release commits to a branch. It pushes only if origin's main is
+      # still this commit, so a merge during the tests stops the release, and the next
+      # run releases both.
+      - run: git switch -C main
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      # Stamps the version (pyproject.toml, server.json, uv.lock), writes CHANGELOG.md,
+      # builds dist/ from that tree, then commits, tags vX.Y.Z, pushes both and creates
+      # the GitHub release. Without a feat, fix or perf commit since the last tag it does
+      # nothing and says released=false.
+      - name: Version, changelog, tag and GitHub release
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uvx --from "python-semantic-release==$PSR_VERSION" semantic-release -v version
+      - name: Attach the distributions to the GitHub release
+        if: steps.version.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: uvx --from "python-semantic-release==$PSR_VERSION" semantic-release publish --tag "$TAG"
+      - if: steps.version.outputs.released == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # From here on the tag is pushed. If a job below fails, fix the cause and use "Re-run
+  # failed jobs" on this run; a new run would find the tag and release nothing.
+
+  pypi:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/maidr-mcp/${{ needs.release.outputs.version }}/
+    permissions:
+      # PyPI trusted publishing: PyPI trusts this repository, workflow file and
+      # environment, so no API token is stored anywhere.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+      # --check-url skips a file PyPI already has, so a re-run after a partial upload
+      # finishes it.
+      - run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/
+
+  ghcr:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+      - id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The Dockerfile labels the image with its MCP Registry name; the source label links
+      # the package to this repository.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/xability/maidr-mcp:${{ needs.release.outputs.version }}
+            ghcr.io/xability/maidr-mcp:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/xability/maidr-mcp
+            org.opencontainers.image.version=${{ needs.release.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
+            org.opencontainers.image.licenses=GPL-3.0-or-later
+
+  mcp-registry:
+    needs: [release, pypi, ghcr]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # mcp-publisher's GitHub OIDC login, which grants the io.github.xability namespace.
+      id-token: write
+    env:
+      VERSION: ${{ needs.release.outputs.version }}
+      # Raise both together, from the release's registry_<version>_checksums.txt. An
+      # "invalid audience" error from login means the registry needs a newer one.
+      MCP_PUBLISHER_VERSION: "1.8.1"
+      MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL -o mcp-publisher.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${MCP_PUBLISHER_SHA256}  mcp-publisher.tar.gz" | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+      - name: server.json names this release
+        run: |
+          jq -e --arg v "$VERSION" '
+            .version == $v
+            and ([.packages[] | select(.registryType == "pypi") | .version] == [$v])
+            and ([.packages[] | select(.registryType == "oci") | .identifier]
+                 == ["ghcr.io/xability/maidr-mcp:" + $v])
+          ' server.json
+      # The registry proves ownership from the package's README on PyPI, which can take a
+      # moment to serve a new release.
+      - name: Wait for PyPI to serve the release
+        run: |
+          for _ in $(seq 30); do
+            curl -fs -o /dev/null "https://pypi.org/pypi/maidr-mcp/$VERSION/json" && exit 0
+            sleep 10
+          done
+          echo "::error::PyPI does not serve maidr-mcp $VERSION after five minutes."
+          exit 1
+      # The registry reads the image's label without credentials, so the package has to be
+      # public, which a new GHCR package may not be.
+      - name: The image is public
+        run: |
+          token=$(curl -fsS "https://ghcr.io/token?scope=repository:xability/maidr-mcp:pull" | jq -r .token)
+          if ! curl -fsS -o /dev/null -H "Authorization: Bearer $token" \
+            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
+            "https://ghcr.io/v2/xability/maidr-mcp/manifests/$VERSION"; then
+            echo "::error::ghcr.io/xability/maidr-mcp:$VERSION cannot be pulled anonymously. Make the package public (its Package settings, Change visibility), then re-run this job."
+            exit 1
+          fi
+      - run: ./mcp-publisher login github-oidc
+      - run: ./mcp-publisher publish

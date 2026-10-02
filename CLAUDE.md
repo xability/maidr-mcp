@@ -36,4 +36,15 @@ e2e/              # Playwright driver against ext-apps' basic-host
 
 ## Git
 
-Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `ci:`, `chore:`), imperative mood, lower case. One logical change per commit. Work on a branch; `main` takes pull requests.
+Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `ci:`, `chore:`), imperative mood, lower case. One logical change per commit. Work on a branch; `main` takes pull requests. The type decides the release, below.
+
+## Release
+
+`.github/workflows/release.yml` releases `main` with python-semantic-release (configured in `pyproject.toml`), Mondays at 17:00 UTC, an hour after py-maidr and two after maidr, or when run by hand.
+
+- **What releases.** `feat:` raises the minor version, `fix:` and `perf:` the patch; other types release nothing. It stays 0.x: a breaking change raises the minor version too.
+- **The gate.** Scheduled runs do nothing until the repository variable `RELEASE_ENABLED` is `true`, set once PyPI trusts the workflow: a tag pushed without its PyPI upload is never uploaded later. A run by hand always runs.
+- **What a release does.** Tests and `e2e/run.sh` first. Then it stamps the version into `pyproject.toml`, `server.json` (three places) and `uv.lock`, writes `CHANGELOG.md`, commits, tags `vX.Y.Z` and makes the GitHub release. Then it publishes `maidr-mcp` to PyPI (trusted publishing), `ghcr.io/xability/maidr-mcp:X.Y.Z` and `:latest`, and, once both are out, `server.json` to the MCP Registry as `io.github.xability/maidr-mcp`. Never edit those versions or `CHANGELOG.md` by hand.
+- **A failed publish.** Fix the cause and use "Re-run failed jobs" on that run. A new run finds the tag and releases nothing.
+- **Pin updates release.** The maidr.js pin (`MAIDR_JS_VERSION`) ships inside the package and the image, so `update-maidr.yml` commits its bumps as `fix(deps): ...`: the next weekly run cuts a patch release that carries them, where a `chore:` bump would never reach users. py-maidr is not pinned for users: the package and the image install the newest `maidr>=1.26,<2`, so moving it in `uv.lock` changes what CI tests, not what users get.
+- **The registry name is proven twice.** `<!-- mcp-name: io.github.xability/maidr-mcp -->` in `README.md` (PyPI's long description) and the `io.modelcontextprotocol.server.name` label in the `Dockerfile`. `tests/test_release.py` keeps both, and `server.json`'s versions, in step.
