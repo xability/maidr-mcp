@@ -37,7 +37,8 @@ jobs:
   checks:
     # A scheduled run does nothing until the repository variable RELEASE_ENABLED is
     # "true", which the maintainer sets once PyPI trusts this workflow; before that, each
-    # would push a tag that PyPI then refuses. A run started by hand always runs.
+    # would push a tag that PyPI then refuses. A run started by hand always runs. Every
+    # job after this one needs it, so a skipped check skips the whole release.
     if: github.event_name == 'workflow_dispatch' || vars.RELEASE_ENABLED == 'true'
     # ci.yml itself, so a release passes exactly what a pull request does: the tests, the
     # e2e, the image, and the wheel run as a host would run it.

@@ -61,11 +61,15 @@ def test_the_image_label_proves_the_name():
 
 def test_every_action_in_the_release_is_pinned_to_a_commit():
     # The release runs them beside tokens that push tags, publish to PyPI and write the image,
-    # so a tag moved upstream must not change what runs.
-    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    # ci.yml's among them since the release calls it, so a tag moved upstream must not change
+    # what runs.
+    workflows = [ROOT / ".github/workflows" / name for name in ("release.yml", "ci.yml")]
     uses = [
         (action, comment)
-        for action, comment in re.findall(r"uses: (\S+)(.*)$", workflow, re.MULTILINE)
+        for workflow in workflows
+        for action, comment in re.findall(
+            r"uses: (\S+)(.*)$", workflow.read_text(encoding="utf-8"), re.MULTILINE
+        )
         if not action.startswith("./")
     ]
     assert uses
