@@ -1,6 +1,6 @@
 [project]
 name = "maidr-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "MCP server that shows accessible maidr charts in ChatGPT and Claude conversations, and lets the model move the reader through them"
 readme = "README.md"
 license = "GPL-3.0-or-later"

@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.1.1 (2026-10-05)
+
+### Bug Fixes
+
+- **deps**: Load maidr.js 4.14.0
+  ([`9e50d9c`](https://github.com/xability/maidr-mcp/commit/9e50d9c694672aedc6f05fd4821c64ebea9b22a1))
+
+### Documentation
+
+- Remove pre-release distribution note ([#16](https://github.com/xability/maidr-mcp/pull/16),
+  [`3085f1a`](https://github.com/xability/maidr-mcp/commit/3085f1a0ef5f83c4d171d609e65a038de8b22342))
+
+
 ## v0.1.0 (2026-10-02)
 
 ### Continuous Integration
