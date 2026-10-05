@@ -19,7 +19,7 @@ from maidr_mcp.relay import POLL_SECONDS, UNKNOWN_VIEW, Relay
 VIEW_URI = "ui://maidr/chart.html"
 SVG_META_KEY = "ai.maidr/svg"
 CDN = "https://cdn.jsdelivr.net"
-MAIDR_JS_VERSION = "4.13.0"
+MAIDR_JS_VERSION = "4.14.0"
 EXT_APPS_VERSION = "2.0.3"
 
 INSTRUCTIONS = """\
