@@ -25,13 +25,23 @@ EXT_APPS_VERSION = "2.0.3"
 INSTRUCTIONS = """\
 maidr shows a chart in the conversation that blind and low-vision readers explore with the \
 keyboard, a screen reader, sonification and braille. Call show_chart with the data whenever a \
-chart helps, and always when the reader is blind or low vision or asks for an accessible chart. \
-To change a chart already shown (new data, another type, a filter), call update_chart with its \
-viewId rather than show_chart: it replaces the chart in place, and a reader in it stays there.
+chart in the conversation helps, and always when the reader is blind or low vision or asks for \
+an accessible chart there. To change a chart already shown (new data, another type, a filter), \
+call update_chart with its viewId rather than show_chart: it replaces the chart in place, and a \
+reader in it stays there.
 
-After that, the reader moves through the chart themselves. When they ask to be taken to a point \
-("March", "the second-highest bar"), call maidr_get_layer_data to find the point's target, then \
-maidr_navigate.
+show_chart is for a chart shown here and nowhere else. Do not call it when the user wants \
+plotting code, a file, a notebook or a web page, a chart type it does not take, several panels, \
+or a look it does not offer, such as colours or annotations: make that chart another way, with \
+a maidr skill if you have one. Do not call it either where the host shows no MCP Apps, as in a \
+terminal: its answer would still say the chart is showing. Never make one chart both ways, or \
+redraw a chart show_chart showed. The maidr_* tools here reach only the charts show_chart \
+opened, by their viewId; a maidr chart on a web page the reader has open may offer tools of the \
+same names, without a viewId, through their browser.
+
+Once a chart is shown, the reader moves through it themselves. When they ask to be taken to a \
+point ("March", "the second-highest bar"), call maidr_get_layer_data to find the point's target, \
+then maidr_navigate.
 
 When they ask for something the chart's own keys do (braille, sound or text on or off, play \
 the chart or stop it, jump to the highest or lowest value of the layer they are on, or to the \
@@ -172,7 +182,8 @@ def build_server(relay: Relay | None = None) -> MCPServer:
         title="Show an accessible chart",
         description="Show data as a chart in the conversation that the reader explores with the "
         "keyboard, a screen reader, sonification and braille. Returns the viewId the maidr_* "
-        "tools take.",
+        "tools take. Only for a chart to show here: not for plotting code, files or web pages, "
+        "nor where the host shows no MCP Apps, as in a terminal.",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
     )
     async def show_chart(chart: Chart) -> CallToolResult:

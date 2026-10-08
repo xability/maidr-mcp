@@ -98,6 +98,26 @@ def test_the_instructions_say_when_to_call_each_model_tool():
     assert "reader.position is live" in INSTRUCTIONS
 
 
+def test_the_instructions_leave_other_charts_to_other_routes():
+    # The maidr skill makes what show_chart cannot, and show_chart answers as if its chart
+    # showed even where the host shows none, so a model with both makes each chart one way.
+    assert "plotting code, a file, a notebook or a web page" in INSTRUCTIONS
+    assert "with a maidr skill if you have one" in INSTRUCTIONS
+    assert "shows no MCP Apps, as in a terminal" in INSTRUCTIONS
+    assert "Never make one chart both ways" in INSTRUCTIONS
+    # maidr.js on a web page offers tools of the same names, which take no viewId.
+    assert "same names, without a viewId" in INSTRUCTIONS
+
+
+async def test_show_chart_says_what_it_is_not_for():
+    # A host may not pass the server's instructions to the model; the description reaches it.
+    async with Client(build_server()) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+    description = tools["show_chart"].description
+    assert "not for plotting code, files or web pages" in description
+    assert "shows no MCP Apps, as in a terminal" in description
+
+
 def test_the_instructions_say_when_to_take_the_reader_into_the_chart():
     # Only when they asked, never because they left, and never over the host's own dialog.
     assert "pass focus: true" in INSTRUCTIONS
