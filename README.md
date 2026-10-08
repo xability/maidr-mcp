@@ -60,6 +60,76 @@ Every type also takes `title`, `x_label` and `y_label`. A pie has no axes, so th
 
 The model reads every layer's points with `maidr_get_layer_data`. Where the last column says no, maidr gives the points no `target`: the reader moves through them with the keys, and `maidr_navigate` answers `layer not navigable`.
 
+## Example prompts
+
+Once the server is connected, a reader asks in plain words; nobody names a tool. The prompts below are grouped by what the reader is doing, and each says which tools the model is expected to call. Paste the data into the conversation, or let the model use numbers it already has from earlier in the chat.
+
+### Show a chart
+
+| Scenario | Prompt | Chart |
+| --- | --- | --- |
+| Sales report | "Show my quarterly revenue as a bar chart: Q1 120, Q2 180, Q3 150, Q4 210, in thousands of dollars." | `bar` |
+| Comparing groups | "Compare these two stores side by side by month: North 40, 52, 61, 58 and South 35, 49, 66, 70 for January to April." | `bar`, two series |
+| Parts of a total | "Stack this year's energy mix by quarter: coal, gas, solar and wind. The numbers are below." | `bar`, `stacked` |
+| A trend over time | "Plot daily temperatures for last week as a line: 18, 21, 19, 24, 26, 23, 20 degrees, Monday to Sunday." | `line` |
+| Several trends | "Draw a line chart of the US, Korea and Germany unemployment rates from 2015 to 2025 in the table below, one line each." | `line`, three series |
+| A value that changes in steps | "Show our pricing tier over the year as a step chart: 9 dollars until March, 12 until August, then 15." | `step` |
+| A relationship | "Make a scatter plot of study hours against exam score for these 30 students, with a trend line." | `scatter` with `trend` |
+| A distribution | "Here are 200 response times in milliseconds. Show me a histogram with 20 bins." | `histogram` |
+| Spread and outliers | "Show box plots of the reaction times for the control, low-dose and high-dose groups." | `box` |
+| The shape of a distribution | "Same data, but as violins, so I can hear where each group's values bunch up." | `violin` |
+| A grid of values | "Show a heatmap of website visits by weekday and hour; label the colour scale 'visits'." | `heatmap` |
+| Shares of a whole | "Make a pie chart of how my monthly budget splits: rent 45%, food 20%, transport 10%, savings 15%, other 10%." | `pie` |
+| Stock prices | "Show a candlestick chart of this stock's open, high, low and close for the last ten trading days." | `candlestick` |
+
+The model calls `show_chart` once, and the chart appears with the `viewId` the other tools use.
+
+### Explore the chart through the model
+
+| Prompt | What the model does |
+| --- | --- |
+| "Take me to the highest bar." | `maidr_get_layer_data` to find it, then `maidr_navigate` with `focus: true`; maidr announces it by speech, braille and sound. |
+| "Which month had the lowest temperature? Don't move me, just tell me." | `maidr_get_layer_data` only, and answers in the chat. |
+| "Go to the first point where the score is above 90." | Finds the point in the layer data and moves there. |
+| "What is this point?" (while in the chart) | Answers from the position the chart reported, or reads it live with `maidr_list_charts`. |
+| "How many points does this chart have, and where am I?" | `maidr_list_charts`. |
+| "Jump to Q3 in the South series." | `maidr_navigate` to that series and category. |
+| "Take me to the lowest close in the candlestick chart." | Says that maidr does not let the model move the reader there, and offers the keys instead (see the table above). |
+
+### Have the model press the chart's keys
+
+| Prompt | Command the model runs |
+| --- | --- |
+| "Turn braille on." / "Turn the sound off." | `toggle_braille`, `toggle_sound` |
+| "Stop reading the text, I only want the tones." | `toggle_text` |
+| "Play the whole chart for me from left to right." | `autoplay_forward` |
+| "Faster." / "Stop." | `speed_up_autoplay`, `stop_autoplay` |
+| "Go to the maximum value." / "Now the minimum." | `go_to_max_value`, `go_to_min_value` |
+| "Jump to the last point." | `move_to_right_extreme` |
+| "Switch to the trend line." | `next_layer` |
+| "Turn on high contrast." | `toggle_high_contrast` |
+
+The model first calls `maidr_list_commands` to see what the reader can run and which modes are on, then `maidr_run_command`, and tells the reader which key does the same thing next time.
+
+### Change the chart in place
+
+| Prompt | What the model does |
+| --- | --- |
+| "Add December: 230." | `update_chart` with the new data, in the same view. |
+| "Now show it as a line instead of bars." | `update_chart` with `type: "line"`. |
+| "Use 10 bins instead of 20." | `update_chart` on the histogram. |
+| "Split it by region." | `update_chart` with one series per region. |
+
+A reader who was in the chart stays in it, on the new chart, and hears that it changed.
+
+### Whole conversations
+
+- **Homework help.** "I'm blind and studying for a statistics exam. Show a histogram of these 50 test scores, play it from left to right so I can hear the shape, then tell me whether it is skewed." The model shows the histogram, runs `autoplay_forward`, and answers from the layer data.
+- **A quick look at a dataset.** "Here is a CSV of house prices and floor area. Show me a scatter with a trend line, take me to the most expensive house, and tell me how far it sits from the line."
+- **Following a stock.** "Here are a stock's open, high, low and close for the last ten trading days. Show them as a candlestick chart. Which day had the largest range between high and low?" Then: "Show the closing prices as a line instead, and take me to that day."
+- **Checking an experiment.** "Show box plots of the three groups' reaction times. Which group has the widest spread? Turn braille on and take me to that box." The model answers from the data and runs `toggle_braille`; a box chart cannot be navigated by the model, so it tells the reader the keys to reach that box.
+- **Reviewing a budget.** "Show my spending as a pie chart, then as a bar chart sorted from largest to smallest, and take me to the largest category."
+
 ## Use it
 
 maidr-mcp is published three ways, at the same version:
