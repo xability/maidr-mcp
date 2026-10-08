@@ -202,6 +202,18 @@ The desktop app shares this configuration with the Codex CLI and IDE extension. 
 - Whether the app draws an MCP App's UI for a server added this way is not documented.
 - This route has not been tried with maidr-mcp, so it is not known whether the chart appears.
 
+### Alongside the maidr skill
+
+[maidr-skill](https://github.com/xability/maidr-skill) teaches AI agents to make the charts they write accessible, in Python, R or JavaScript. Both can be installed at once. The server's instructions and the skill split the charts the same way, and both tell the model to make each chart one way only:
+
+| The request | Goes to |
+| --- | --- |
+| A chart to see or explore in the conversation, of one of the [types above](#tools) | `show_chart`, and `update_chart` to change it |
+| Plotting code, a file, a notebook, a web page or a report; another chart type, several panels, or a styled chart | the skill |
+| Any chart in a terminal, or another host that shows no MCP Apps | the skill |
+
+The `maidr_*` tools here reach only the charts `show_chart` opened. A page the skill makes runs maidr.js, which, in a browser that supports it, offers tools of the same names to an agent there, without a `viewId`; the instructions tell the model which is which. MCP servers added in the ChatGPT desktop app reach the Codex CLI and IDE extension too, where the skill is often installed, so the split matters there most.
+
 ## Try it in the reference host
 
 `e2e/run.sh` checks the whole loop without a ChatGPT or Claude account. It does three things:
@@ -242,7 +254,8 @@ It checks:
 - **Each `show_chart` call still adds a chart.** Claude mounts a new view for every call to a tool with a UI, and keeps the earlier ones. A chart that changes stays in its view only when the model calls `update_chart`, as the server's instructions ask; a second `show_chart` is a second view.
 - **The relay polls.** Each open chart makes a request every 20 seconds, or every 2 seconds on a host that cuts requests held open, where a model's call can also take up to 2 seconds longer to reach the chart. A host that also allows a view fewer than 30 calls a minute leaves some of the model's calls unanswered. Which hosts limit calls from a view is not yet known. The same chart open twice, say in two tabs, makes each copy read the other's polls as cuts, so both settle on short polls.
 - **Access is one shared token, and only if you set one.** Without a token, anyone with the server's URL can draw charts. Set `MAIDR_MCP_TOKEN` and every request needs it; Claude and ChatGPT carry it in the URL. That URL, kept in the host's connector settings, is then the secret; rotating it means restarting the server with a new token and updating each host. Full OAuth is not implemented. See [An access token](#an-access-token). A chart can only be read or driven with its `viewId`, a random 24-character token.
-- **Ten chart families, and no plotting code.** The model sends data for one of the types [above](#tools), and the server draws it. It deliberately takes no plotting code: anyone with its URL could run code on it. py-maidr's experimental plot types are left out until they have been tried with readers.
+- **Ten chart families, and no plotting code.** The model sends data for one of the types [above](#tools), and the server draws it. It deliberately takes no plotting code: anyone with its URL could run code on it. py-maidr's experimental plot types are left out until they have been tried with readers. The [maidr skill](#alongside-the-maidr-skill) makes the rest.
+- **`show_chart` cannot tell whether its chart appears.** Its answer reads the same in every host, since a stateless request does not always say what the client can show. In a host that shows no MCP Apps, such as a terminal, the answer still says the chart is showing. The instructions and the tool's description tell the model not to call it there; nothing else stops it.
 
 ## Network and data
 
