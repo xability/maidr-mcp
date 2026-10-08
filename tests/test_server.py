@@ -105,6 +105,8 @@ def test_the_instructions_leave_other_charts_to_other_routes():
     assert "with a maidr skill if you have one" in INSTRUCTIONS
     assert "shows no MCP Apps, as in a terminal" in INSTRUCTIONS
     assert "Never make one chart both ways" in INSTRUCTIONS
+    # Remaking a chart elsewhere is ruled out; changing it in place is not.
+    assert "as a page or artifact: to change it, call update_chart" in INSTRUCTIONS
     # maidr.js on a web page offers tools of the same names, which take no viewId.
     assert "same names, without a viewId" in INSTRUCTIONS
 

@@ -35,9 +35,10 @@ plotting code, a file, a notebook or a web page, a chart type it does not take, 
 or a look it does not offer, such as colours or annotations: make that chart another way, with \
 a maidr skill if you have one. Do not call it either where the host shows no MCP Apps, as in a \
 terminal: its answer would still say the chart is showing. Never make one chart both ways, or \
-redraw a chart show_chart showed. The maidr_* tools here reach only the charts show_chart \
-opened, by their viewId; a maidr chart on a web page the reader has open may offer tools of the \
-same names, without a viewId, through their browser.
+remake a chart show_chart showed as a page or artifact: to change it, call update_chart. The \
+maidr_* tools here reach only the charts show_chart opened, by their viewId; a maidr chart on a \
+web page the reader has open may offer tools of the same names, without a viewId, through their \
+browser.
 
 Once a chart is shown, the reader moves through it themselves. When they ask to be taken to a \
 point ("March", "the second-highest bar"), call maidr_get_layer_data to find the point's target, \
