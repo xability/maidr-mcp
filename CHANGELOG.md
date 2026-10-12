@@ -2,6 +2,24 @@
 
 <!-- version list -->
 
+## v0.1.2 (2026-10-12)
+
+### Bug Fixes
+
+- Keep show_chart to charts shown in the conversation
+  ([#18](https://github.com/xability/maidr-mcp/pull/18),
+  [`0a1c7c8`](https://github.com/xability/maidr-mcp/commit/0a1c7c8cb28dc66a1b90da46b33939d28f60695d))
+
+- **deps**: Load maidr.js 4.15.0
+  ([`fc97dff`](https://github.com/xability/maidr-mcp/commit/fc97dff771dc9f6bf6672d5a2de28e677dfc2b46))
+
+### Documentation
+
+- Add example prompts by scenario and chart type
+  ([#17](https://github.com/xability/maidr-mcp/pull/17),
+  [`0b485a8`](https://github.com/xability/maidr-mcp/commit/0b485a8725fe975db914510caa7038c9c124e66d))
+
+
 ## v0.1.1 (2026-10-05)
 
 ### Bug Fixes
