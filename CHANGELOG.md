@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.1.3 (2026-10-19)
+
+### Bug Fixes
+
+- **deps**: Load maidr.js 4.16.0
+  ([`d79fc65`](https://github.com/xability/maidr-mcp/commit/d79fc655988ccb3225f4d38a4f81bc9135346314))
+
+
 ## v0.1.2 (2026-10-12)
 
 ### Bug Fixes
