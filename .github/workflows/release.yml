@@ -209,7 +209,7 @@ jobs:
             org.opencontainers.image.source=https://github.com/xability/maidr-mcp
             org.opencontainers.image.version=${{ needs.release.outputs.version }}
             org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
-            org.opencontainers.image.licenses=GPL-3.0-or-later
+            org.opencontainers.image.licenses=MIT
 
   mcp-registry:
     needs: [release, pypi, ghcr]
