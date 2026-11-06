@@ -1108,6 +1108,7 @@ dependencies = [
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "seaborn" },
+    { name = "six" },
     { name = "uvicorn" },
 ]
 
@@ -1125,6 +1126,7 @@ requires-dist = [
     { name = "mplfinance", specifier = ">=0.12.10b0" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "seaborn", specifier = ">=0.13" },
+    { name = "six", specifier = ">=1.16" },
     { name = "uvicorn", specifier = ">=0.31.1" },
 ]
 

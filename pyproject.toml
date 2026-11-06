@@ -21,6 +21,7 @@ dependencies = [
     "mplfinance>=0.12.10b0",
     "pandas>=2.0",
     "seaborn>=0.13",
+    "six>=1.16",
     "uvicorn>=0.31.1",
 ]
 
