@@ -2,6 +2,18 @@
 
 <!-- version list -->
 
+## v0.1.4 (2026-11-09)
+
+### Bug Fixes
+
+- **deps**: Declare six runtime dependency and cancel obsolete PR checks
+  ([#22](https://github.com/xability/maidr-mcp/pull/22),
+  [`595a15a`](https://github.com/xability/maidr-mcp/commit/595a15acd84b8aaca6ba5cad97556d3450ebbd19))
+
+- **deps**: Load maidr.js 4.17.0
+  ([`c7c4732`](https://github.com/xability/maidr-mcp/commit/c7c47329ef8f7e26902b6d47186b4f8049954670))
+
+
 ## v0.1.3 (2026-10-19)
 
 ### Bug Fixes
