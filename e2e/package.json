@@ -4,6 +4,6 @@
   "type": "module",
   "description": "Drives maidr-mcp's chart in ext-apps' reference host",
   "dependencies": {
-    "playwright-core": "1.56.1"
+    "playwright-core": "1.65.1"
   }
 }
