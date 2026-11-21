@@ -284,4 +284,4 @@ To pick another version, run the workflow from the Actions tab with a maidr.js v
 
 ## License
 
-GPL-3.0-or-later, like the rest of maidr.
+MIT. See [LICENSE](LICENSE).
