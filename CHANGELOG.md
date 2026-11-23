@@ -2,6 +2,23 @@
 
 <!-- version list -->
 
+## v0.1.5 (2026-11-23)
+
+### Bug Fixes
+
+- **deps**: Load maidr.js 4.18.0
+  ([`a9dd817`](https://github.com/xability/maidr-mcp/commit/a9dd81797b343f9888f4a65167d93d100c75f0d6))
+
+- **deps**: Load maidr.js 4.18.1
+  ([`99081f9`](https://github.com/xability/maidr-mcp/commit/99081f9b3b42aba3943723e78ba8ef74880339bd))
+
+### Continuous Integration
+
+- Raise playwright-core to 1.65.1, which installs chromium on ubuntu 26.04
+  ([#25](https://github.com/xability/maidr-mcp/pull/25),
+  [`7b65926`](https://github.com/xability/maidr-mcp/commit/7b659264fe7bc24b004ba9165402068ec4e971ed))
+
+
 ## v0.1.4 (2026-11-09)
 
 ### Bug Fixes
