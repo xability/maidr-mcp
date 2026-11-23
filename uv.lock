@@ -1073,7 +1073,7 @@ wheels = [
 
 [[package]]
 name = "maidr"
-version = "1.28.1"
+version = "1.29.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "htmltools" },
@@ -1090,9 +1090,9 @@ dependencies = [
     { name = "seaborn" },
     { name = "wrapt" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/74/e5/dd0daad33dd7d1a808fd9d4ce61185d0ee41af9730b5ea85ff28cebd1b43/maidr-1.28.1.tar.gz", hash = "sha256:1ff4c8fd45c9742b56966c03648ce65ff7387b4a277380b8690809d21fed1496", size = 1807020, upload-time = "2026-10-26T17:07:07.903Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2d/eb/702b14baf6d8008f5fb35b0f78e1db268877174381da8f82aa6867cd7762/maidr-1.29.0.tar.gz", hash = "sha256:32405de265ece7d2d7600c162ea7af5260d1544801184a4192e4d21284465b35", size = 1879167, upload-time = "2026-11-23T16:59:40.376Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6b/fc/dfca19f9574cf5243df6d03cdaa506c555905bd5a01c1c49c5a99abe0c47/maidr-1.28.1-py3-none-any.whl", hash = "sha256:532cacb741972a6c10bc16a0690384d58080f0762b959c3f65eeeda9da3669cb", size = 1993899, upload-time = "2026-10-26T17:07:06.225Z" },
+    { url = "https://files.pythonhosted.org/packages/a7/6a/0615bebcd055720238e4f578dae94c7c9a41ce5292bda05f3f03fe680eeb/maidr-1.29.0-py3-none-any.whl", hash = "sha256:418a70a22d8be43494e3fe91ea58f243b98279f0604d4dc9ff5a749bcacb82a5", size = 2066230, upload-time = "2026-11-23T16:59:38.668Z" },
 ]
 
 [[package]]
